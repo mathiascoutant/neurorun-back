@@ -12,6 +12,7 @@ type Config struct {
 	Port               string
 	MongoURI           string
 	MongoDB            string
+	MongoForceIPv4     bool
 	JWTSecret          string
 	StravaClientID     string
 	StravaClientSecret string
@@ -30,6 +31,7 @@ func Load() (*Config, error) {
 		Port:               getenv("PORT", "8080"),
 		MongoURI:           os.Getenv("MONGODB_URI"),
 		MongoDB:            getenv("MONGODB_DB", "runapp"),
+		MongoForceIPv4:     envBoolDefaultTrue("MONGODB_FORCE_IPV4"),
 		JWTSecret:          os.Getenv("JWT_SECRET"),
 		StravaClientID:     os.Getenv("STRAVA_CLIENT_ID"),
 		StravaClientSecret: os.Getenv("STRAVA_CLIENT_SECRET"),
@@ -86,6 +88,15 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envBoolDefaultTrue : si la variable est absente ou vide → true. Mettre "0", "false", "no" pour forcer false.
+func envBoolDefaultTrue(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return true
+	}
+	return v != "0" && v != "false" && v != "no"
 }
 
 func appendOriginIfMissing(origins []string, extra string) []string {

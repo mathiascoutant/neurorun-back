@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"net"
 	"time"
 
 	"runapp/internal/models"
@@ -20,11 +21,23 @@ type DB struct {
 	goals           *mongo.Collection
 }
 
-func Connect(uri, dbName string) (*DB, error) {
+// tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
+// « remote error: tls: internal error » vers MongoDB Atlas.
+type tcp4OnlyDialer struct{ net.Dialer }
+
+func (d tcp4OnlyDialer) DialContext(ctx context.Context, _, addr string) (net.Conn, error) {
+	return d.Dialer.DialContext(ctx, "tcp4", addr)
+}
+
+func Connect(uri, dbName string, forceIPv4 bool) (*DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	opts := options.Client().ApplyURI(uri)
+	if forceIPv4 {
+		opts.SetDialer(tcp4OnlyDialer{})
+	}
+	client, err := mongo.Connect(ctx, opts)
 	if err != nil {
 		return nil, err
 	}

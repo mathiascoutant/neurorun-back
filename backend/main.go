@@ -31,7 +31,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	db, err := store.Connect(cfg.MongoURI, cfg.MongoDB)
+	db, err := store.Connect(cfg.MongoURI, cfg.MongoDB, cfg.MongoForceIPv4)
 	if err != nil {
 		log.Fatalf("mongo: %v", err)
 	}
