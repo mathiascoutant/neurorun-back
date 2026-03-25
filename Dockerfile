@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 ARG APP_VERSION=0.0.0
 
 # Runtime Debian plutôt qu’Alpine : évite des échecs TLS (« remote error: tls: internal error »)
