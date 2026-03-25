@@ -32,7 +32,10 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	db, err := store.Connect(cfg.MongoURI, cfg.MongoDB, cfg.MongoForceIPv4)
+	db, err := store.Connect(cfg.MongoURI, cfg.MongoDB, store.ConnectOptions{
+		ForceDialIPv4: cfg.MongoForceIPv4,
+		TLS12Only:     cfg.MongoTLS12Only,
+	})
 	if err != nil {
 		log.Fatalf("mongo: %v", err)
 	}

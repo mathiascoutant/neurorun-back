@@ -39,17 +39,24 @@ func (d tcp4OnlyDialer) DialContext(ctx context.Context, _, addr string) (net.Co
 	return d.Dialer.DialContext(ctx, "tcp4", addr)
 }
 
-func Connect(uri, dbName string, forceIPv4 bool) (*DB, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// ConnectOptions : par défaut tout est false — même schéma qu’un projet type Atlas / premierdelan
+// (ApplyURI + timeouts). N’activer les options que si tu as un problème réseau documenté.
+type ConnectOptions struct {
+	ForceDialIPv4 bool // MONGODB_FORCE_IPV4=1 — dial tcp IPv4 uniquement
+	TLS12Only     bool // MONGODB_TLS12_ONLY=1 — handshake limité à TLS 1.2
+}
+
+func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	opts := options.Client().ApplyURI(uri)
-	if forceIPv4 {
+	opts.SetServerSelectionTimeout(30 * time.Second)
+
+	if o.ForceDialIPv4 {
 		opts.SetDialer(tcp4OnlyDialer{})
 	}
-	// Certains chemins réseau (FAI / hébergeur) se trompent sur TLS 1.3 et renvoient
-	// « remote error: tls: internal error ». Atlas supporte TLS 1.2 ; SNI est complété par le driver.
-	if mongoURIUsesTLS(uri) {
+	if o.TLS12Only && mongoURIUsesTLS(uri) {
 		opts.SetTLSConfig(&tls.Config{
 			MinVersion: tls.VersionTLS12,
 			MaxVersion: tls.VersionTLS12,
