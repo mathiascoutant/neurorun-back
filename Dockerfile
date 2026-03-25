@@ -2,7 +2,8 @@ ARG APP_VERSION=0.0.0
 
 # Runtime Debian plutôt qu’Alpine : évite des échecs TLS (« remote error: tls: internal error »)
 # vers MongoDB Atlas depuis certains hôtes Docker.
-FROM golang:1.22-bookworm AS builder
+# Même famille de versions que premierdelan-back (Go 1.21 + driver 1.13) pour le même comportement TLS vers Atlas.
+FROM golang:1.21-bookworm AS builder
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
