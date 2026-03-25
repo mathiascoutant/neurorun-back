@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -63,13 +64,17 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	addr := ":" + cfg.Port
+	if cfg.ListenHost != "" {
+		addr = net.JoinHostPort(cfg.ListenHost, cfg.Port)
+	}
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
+		Addr:    addr,
 		Handler: r,
 	}
 
 	go func() {
-		log.Printf("API écoute sur :%s", cfg.Port)
+		log.Printf("API écoute sur %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}

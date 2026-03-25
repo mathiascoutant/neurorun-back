@@ -1,7 +1,8 @@
-# API seulement — MongoDB via MONGODB_URI dans .env (ex. Atlas).
-# Sur le VPS : dossier deploy/ (ou back/)
+# API — MongoDB via .env (Atlas). network_mode: host évite souvent les échecs TLS (« tls: internal error »)
+# avec le réseau bridge Docker sur certains VPS. Dans .env : LISTEN_HOST=127.0.0.1 et PORT=9081
+# (nginx sur la machine pointe vers http://127.0.0.1:9081). Linux uniquement pour host.
+#
 #   cp .env.example .env && nano .env
-#   docker login ghcr.io  # si images privées
 #   docker compose pull && docker compose up -d
 
 services:
@@ -9,9 +10,4 @@ services:
     image: ghcr.io/mathiascoutant/neurorun-back:latest
     restart: unless-stopped
     env_file: .env
-    ports:
-      - "127.0.0.1:9081:8080"
-    networks: [neurorun]
-
-networks:
-  neurorun:
+    network_mode: host

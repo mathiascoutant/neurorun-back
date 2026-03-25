@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	Port               string
+	ListenHost         string // LISTEN_HOST : ex. 127.0.0.1 derrière nginx avec network_mode host
 	MongoURI           string
 	MongoDB            string
 	MongoForceIPv4     bool
@@ -29,6 +30,7 @@ func Load() (*Config, error) {
 	frontend := getenv("FRONTEND_URL", "http://localhost:3000")
 	c := &Config{
 		Port:               getenv("PORT", "8080"),
+		ListenHost:         strings.TrimSpace(os.Getenv("LISTEN_HOST")),
 		MongoURI:           os.Getenv("MONGODB_URI"),
 		MongoDB:            getenv("MONGODB_DB", "runapp"),
 		MongoForceIPv4:     envBoolDefaultTrue("MONGODB_FORCE_IPV4"),
