@@ -48,6 +48,19 @@ func Load() (*Config, error) {
 	}
 	if len(c.CORSAllowed) == 0 {
 		c.CORSAllowed = []string{frontend}
+	} else {
+		// Sinon un .env prod (CORS sans localhost) bloque le front en local.
+		c.CORSAllowed = appendOriginIfMissing(c.CORSAllowed, frontend)
+	}
+	// Next en local utilise http://localhost:3000 (pas https). Souvent FRONTEND_URL pointe la prod
+	// pour Strava / liens, donc on autorise aussi ces origines de dev.
+	for _, o := range []string{
+		"http://localhost:3000",
+		"http://127.0.0.1:3000",
+		"http://localhost:3001",
+		"http://127.0.0.1:3001",
+	} {
+		c.CORSAllowed = appendOriginIfMissing(c.CORSAllowed, o)
 	}
 
 	if c.MongoURI == "" {
@@ -73,4 +86,17 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func appendOriginIfMissing(origins []string, extra string) []string {
+	extra = strings.TrimSpace(extra)
+	if extra == "" {
+		return origins
+	}
+	for _, o := range origins {
+		if o == extra {
+			return origins
+		}
+	}
+	return append(origins, extra)
 }

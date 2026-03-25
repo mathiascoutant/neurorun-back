@@ -220,6 +220,31 @@ type goalBody struct {
 	TargetTime      string  `json:"target_time"`
 }
 
+// validateGoalPayload lit et valide le corps JSON d'un objectif. errHTTP==0 si OK.
+func validateGoalPayload(r *http.Request) (b goalBody, label string, distKm float64, targetTime string, errHTTP int, errMsg string) {
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		return goalBody{}, "", 0, "", http.StatusBadRequest, "invalid json"
+	}
+	label, distKm, ok := goalDistanceLabel(b.DistanceKm)
+	if !ok {
+		return goalBody{}, "", 0, "", http.StatusBadRequest, "distance_km doit être 5, 10, 21 ou 42"
+	}
+	if b.Weeks < 1 || b.Weeks > 52 {
+		return goalBody{}, "", 0, "", http.StatusBadRequest, "weeks entre 1 et 52"
+	}
+	if b.SessionsPerWeek < 1 || b.SessionsPerWeek > 7 {
+		return goalBody{}, "", 0, "", http.StatusBadRequest, "sessions_per_week entre 1 et 7"
+	}
+	targetTime = strings.TrimSpace(b.TargetTime)
+	if len(targetTime) < 2 {
+		return goalBody{}, "", 0, "", http.StatusBadRequest, "indique le temps visé sur la distance (ex. 50 min, 1h45, finir sans chrono précis)"
+	}
+	if utf8.RuneCountInString(targetTime) > 120 {
+		return goalBody{}, "", 0, "", http.StatusBadRequest, "temps visé trop long (120 caractères max)"
+	}
+	return b, label, distKm, targetTime, 0, ""
+}
+
 func truncateRunes(s string, max int) string {
 	if max <= 0 {
 		return ""
@@ -421,38 +446,16 @@ func (h *Handlers) GetGoal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, g)
 }
 
-func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
 	if !u.HasStrava() {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
 		return
 	}
 
-	var b goalBody
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
-		return
-	}
-	label, distKm, ok := goalDistanceLabel(b.DistanceKm)
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "distance_km doit être 5, 10, 21 ou 42"})
-		return
-	}
-	if b.Weeks < 1 || b.Weeks > 52 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "weeks entre 1 et 52"})
-		return
-	}
-	if b.SessionsPerWeek < 1 || b.SessionsPerWeek > 7 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sessions_per_week entre 1 et 7"})
-		return
-	}
-	targetTime := strings.TrimSpace(b.TargetTime)
-	if len(targetTime) < 2 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "indique le temps visé sur la distance (ex. 50 min, 1h45, finir sans chrono précis)"})
-		return
-	}
-	if utf8.RuneCountInString(targetTime) > 120 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "temps visé trop long (120 caractères max)"})
+	b, label, _, targetTime, errHTTP, errMsg := validateGoalPayload(r)
+	if errHTTP != 0 {
+		writeJSON(w, errHTTP, map[string]string{"error": errMsg})
 		return
 	}
 
@@ -469,34 +472,122 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 	}
 	actsJSON, _ := json.Marshal(acts)
 
-	system := `Tu es un coach course à pied expert (français). Tu reçois jusqu'à 50 activités Strava récentes en JSON + un objectif (distance, chrono visé, nombre de semaines avant la course, séances/semaine).
+	system := `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT, phrases courtes (une idée par phrase). Niveau débutant : évite le jargon ou explique en une parenthèse (ex. « allure = minutes pour faire 1 km »).
 
-Rédige un plan d'entraînement détaillé en Markdown. Ordre imposé :
+Tu reçois des activités Strava en JSON + un objectif (distance, chrono visé, semaines avant la course, séances/semaine).
 
-1. **Faisabilité du chrono visé** (obligatoire, en premier, 4 à 8 phrases max) : à partir UNIQUEMENT des tendances dans le JSON (allures, distances, régularité, volume) et des paramètres de l'objectif (distance, temps vis-à-vis de ce que montrent les sorties, nombre de semaines restantes, nombre de séances/semaine), dis clairement si l'objectif te paraît **réaliste**, **ambitieux mais jouable**, ou **très tendu / peu réaliste** dans ces conditions. Si c'est trop tendu, dis-le franchement et propose une alternative (chrono intermédiaire, plus de semaines, ou plus de séances si pertinent). Ne invente pas de chiffres absents des activités.
+Ton ton est bienveillant et **inclusif** : pas de stéréotypes de genre ou de « niveau normal » ; formulations ouvertes. Rappelle en une phrase qu'on peut parler du ressenti, de la fatigue ou des douleurs avec le coach dans le fil prévu sur l'objectif.
 
-2. **Synthèse forme actuelle** (3 à 6 puces, données JSON seulement).
+Réponds UNIQUEMENT avec ce format Markdown (rien d'autre — pas de plan d'entraînement ) :
 
-3. **Principes** (progression, récup, intensité vs volume).
+## Verdict
+Une seule ligne parmi :
+**Réaliste** ou **Ambitieux mais jouable** ou **Très tendu / peu réaliste**
 
-4. **Semaine par semaine** : volume approximatif, sortie longue, séance de qualité si adapté, récup. Respecte le nombre de séances par semaine demandé.
+## En une phrase
+Une phrase simple qui résume pourquoi.
 
-5. **Affûtage** si l'échéance le justifie.
+## Pourquoi (tes données)
+3 à 5 puces maximum. Appuie-toi sur le JSON (allures, fréquence des sorties, distances). Pas de chiffres inventés.
 
-6. **Rappels sécurité** (douleur persistante = stop + avis pro).
+## Conseil si tu veux progresser
+2 ou 3 puces : que pourrais-tu ajuster (chrono plus large, plus de semaines, ou plus de séances) ?
+
+Ne invente pas de chiffres absents du JSON.
 
 **Activités (JSON) :** ` + string(actsJSON)
 
 	userQ := `Objectif course : ` + label + `.
-Chrono ou intention chrono visée : ` + targetTime + `.
+Chrono ou intention : ` + targetTime + `.
 Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
 Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
-Rédige le plan et commence par le bloc « Faisabilité du chrono visé » comme demandé.`
+Donne uniquement le verdict et la justification demandés.`
+
+	text, err := h.openai.Chat(r.Context(), system, userQ)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"feasibility": text})
+}
+
+func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !u.HasStrava() {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
+		return
+	}
+
+	b, label, distKm, targetTime, errHTTP, errMsg := validateGoalPayload(r)
+	if errHTTP != 0 {
+		writeJSON(w, errHTTP, map[string]string{"error": errMsg})
+		return
+	}
+
+	access, err := h.ensureStravaAccess(r.Context(), u)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+		return
+	}
+
+	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+		return
+	}
+	actsJSON, _ := json.Marshal(acts)
+
+	system := `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces, peu de blocs denses. Niveau accessible : si tu cites min/km, rappelle une fois que c'est « minutes pour parcourir 1 km ».
+
+Tu reçois des activités Strava en JSON + un objectif (distance, chrono, semaines restantes, séances/semaine).
+
+Rédige un plan en Markdown avec EXACTEMENT ces sections (titres ## comme ci-dessous), dans l'ordre :
+
+## Rappel faisabilité
+L'utilisateur a déjà lu un avis détaillé. 2 phrases maximum : à quel point le chrono est cohérent avec ses sorties. Pas de répétition longue.
+
+## Où tu en es aujourd'hui
+4 à 6 puces max, uniquement à partir du JSON (allures, volume, régularité). Formulations simples.
+
+## Les 3 idées à retenir
+Exactement 3 puces courtes : ce qui va t'aider à progresser sans te blesser.
+
+## Calendrier — semaine par semaine
+Pour chaque semaine, utilise un sous-titre ### Semaine 1, ### Semaine 2, etc. (autant que les semaines disponibles jusqu'à la course).
+Dans chaque semaine : puces courtes (Séance 1, Séance 2…) avec volume indicatif en km et type d'effort (facile / moyen / un peu plus vite). Respecte le nombre de séances par semaine demandé. Si une seule séance/semaine, une seule puce claire.
+
+## Dans les derniers jours avant la course
+2 à 4 puces : repos, dernier petit effort éventuel, pas de gros volume.
+
+## Sécurité
+2 puces : douleur anormale = arrêt et avis médical ; hydratation et écoute du corps.
+
+## Échanges avec le coach
+2 puces courtes : invite à utiliser le fil de discussion sous cet objectif pour dire comment tu te sens (forme, sommeil, stress), parler de gênes ou douleurs, et ajuster ensemble le rythme ou le chrono si besoin — sans jugement.
+
+Pas de paragraphes de plus de 3 phrases d'affilée. Pas de listes numérotées longues.
+
+**Activités (JSON) :** ` + string(actsJSON)
+
+	userQ := `Objectif course : ` + label + `.
+Chrono ou intention : ` + targetTime + `.
+Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
+Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
+Rédige le plan complet en respectant les titres et le style demandés. Pas de vouvoiement.`
 
 	plan, err := h.openai.Chat(r.Context(), system, userQ)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
+	}
+
+	now := time.Now().UTC()
+	welcome := models.ChatTurn{
+		Role: "assistant",
+		Text: "Salut — je suis là pour t’accompagner sur cet objectif, à ton rythme.\n\n" +
+			"Comment tu te sens en ce moment (énergie, sommeil, stress) ? As-tu des douleurs ou une zone du corps qui t’inquiète ?\n\n" +
+			"Écris-moi après tes sorties si tu veux : on pourra alléger, ajuster le chrono ou le délai ensemble, sans pression.",
+		CreatedAt: now,
 	}
 
 	g := &models.Goal{
@@ -507,12 +598,128 @@ Rédige le plan et commence par le bloc « Faisabilité du chrono visé » comme
 		SessionsPerWeek: b.SessionsPerWeek,
 		TargetTime:      targetTime,
 		Plan:            plan,
+		CoachThread:     []models.ChatTurn{welcome},
 	}
 	if err := h.db.CreateGoal(r.Context(), g); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde objectif"})
 		return
 	}
 	writeJSON(w, http.StatusCreated, g)
+}
+
+const goalCoachMaxTurns = 20
+
+type goalChatBody struct {
+	Message string `json:"message"`
+}
+
+func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !u.HasStrava() {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
+		return
+	}
+
+	idHex := chi.URLParam(r, "id")
+	gid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
+		return
+	}
+
+	g, err := h.db.GetGoalByUser(r.Context(), u.ID, gid)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur"})
+		return
+	}
+
+	var b goalChatBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	b.Message = strings.TrimSpace(b.Message)
+	if b.Message == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message vide"})
+		return
+	}
+
+	access, err := h.ensureStravaAccess(r.Context(), u)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+		return
+	}
+	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 25)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+		return
+	}
+	actsJSON, _ := json.Marshal(acts)
+
+	planCtx := g.Plan
+	const planMax = 3200
+	if len(planCtx) > planMax {
+		planCtx = planCtx[:planMax] + "\n… (suite du plan omise pour le contexte)"
+	}
+
+	system := `Tu es un·e coach course à pied bienveillant·e. Tu écris en français.
+
+**Style et inclusion**
+- TUTOIEMENT par défaut ; si la personne se vouvoie (« je vous », etc.), passe au vouvoiement sans en faire tout un plat.
+- Inclusi·f·ve : pas de stéréotypes de genre, de corps ou de « niveau habituel » ; reste neutre et respectueu·x·se.
+- Accueille toutes les réalités (retour à la course, santé variable, manque de temps).
+
+**Rôle**
+Tu discutes de L'OBJECTIF déjà enregistré (distance, chrono visé, semaines, séances/semaine) et de son plan. Tu peux proposer d'**ajuster** charge, délai ou chrono si la personne dit que ça ne va pas — une piste simple, sans culpabiliser.
+
+**Ressenti et santé**
+- Demande ou rebondis sur : fatigue, sommeil, stress, humeur, douleurs ou gênes.
+- Tu ne diagnostiques pas. Si douleur forte, persistante ou inquiétante : encourage à consulter un·e professionnel·le de santé.
+
+**Forme des réponses**
+3 à 8 phrases en général, ou quelques puces courtes. Pas de réécriture complète du plan sauf demande explicite.
+
+**Objectif enregistré**
+- Distance : ` + g.DistanceLabel + `
+- Chrono visé : ` + g.TargetTime + `
+- Délai : ` + strconv.Itoa(g.Weeks) + ` semaine(s)
+- Séances / semaine : ` + strconv.Itoa(g.SessionsPerWeek) + `
+
+**Plan (référence)**
+` + planCtx + `
+
+**Activités récentes (JSON)**
+` + string(actsJSON)
+
+	msgs := []oai.ChatMessage{{Role: "system", Content: system}}
+	hist := g.CoachThread
+	if len(hist) > goalCoachMaxTurns {
+		hist = hist[len(hist)-goalCoachMaxTurns:]
+	}
+	for _, t := range hist {
+		if t.Role != "user" && t.Role != "assistant" {
+			continue
+		}
+		msgs = append(msgs, oai.ChatMessage{Role: t.Role, Content: t.Text})
+	}
+	msgs = append(msgs, oai.ChatMessage{Role: "user", Content: b.Message})
+
+	reply, err := h.openai.ChatMessages(r.Context(), msgs)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
+		return
+	}
+
+	if err := h.db.AppendGoalCoachTurns(r.Context(), u.ID, gid, b.Message, reply); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
 }
 
 type ctxUser struct{}
@@ -570,8 +777,10 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/conversations", h.CreateConversation)
 		pr.Get("/conversations", h.ListConversations)
 		pr.Get("/conversations/{id}", h.GetConversation)
+		pr.Post("/goals/feasibility", h.GoalFeasibility)
 		pr.Post("/goals", h.CreateGoal)
 		pr.Get("/goals", h.ListGoals)
+		pr.Post("/goals/{id}/chat", h.GoalChat)
 		pr.Get("/goals/{id}", h.GetGoal)
 		pr.Post("/chat", h.Chat)
 	})

@@ -15,5 +15,6 @@ type Goal struct {
 	SessionsPerWeek int                `bson:"sessions_per_week" json:"sessions_per_week"`
 	TargetTime      string             `bson:"target_time,omitempty" json:"target_time"`
 	Plan            string             `bson:"plan" json:"plan"`
+	CoachThread     []ChatTurn         `bson:"coach_thread,omitempty" json:"coach_thread,omitempty"`
 	CreatedAt       time.Time          `bson:"created_at" json:"created_at"`
 }

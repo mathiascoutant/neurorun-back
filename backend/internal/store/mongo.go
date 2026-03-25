@@ -188,7 +188,9 @@ func (d *DB) CreateGoal(ctx context.Context, g *models.Goal) error {
 }
 
 func (d *DB) ListGoalsByUser(ctx context.Context, userID primitive.ObjectID) ([]models.Goal, error) {
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetProjection(bson.M{"coach_thread": 0})
 	cur, err := d.goals.Find(ctx, bson.M{"user_id": userID}, opts)
 	if err != nil {
 		return nil, err
@@ -215,4 +217,17 @@ func (d *DB) GetGoalByUser(ctx context.Context, userID, goalID primitive.ObjectI
 		return nil, err
 	}
 	return &g, nil
+}
+
+func (d *DB) AppendGoalCoachTurns(ctx context.Context, userID, goalID primitive.ObjectID, userText, assistantText string) error {
+	now := time.Now().UTC()
+	turns := []models.ChatTurn{
+		{Role: "user", Text: userText, CreatedAt: now},
+		{Role: "assistant", Text: assistantText, CreatedAt: now.Add(time.Millisecond)},
+	}
+	_, err := d.goals.UpdateOne(ctx,
+		bson.M{"_id": goalID, "user_id": userID},
+		bson.M{"$push": bson.M{"coach_thread": bson.M{"$each": turns}}},
+	)
+	return err
 }
