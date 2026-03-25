@@ -1,0 +1,37 @@
+# Usage sur le VPS, depuis ce dossier :
+#   cp .env.example .env && nano .env
+#   docker login ghcr.io   # si les images sont privées
+#   docker compose pull && docker compose up -d
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks: [neurorun]
+
+  api:
+    image: ghcr.io/mathiascoutant/neurorun-back:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/runapp
+    depends_on:
+      - mongo
+    ports:
+      - "127.0.0.1:9081:8080"
+    networks: [neurorun]
+
+  web:
+    image: ghcr.io/mathiascoutant/neurorun-front:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9080:80"
+    networks: [neurorun]
+
+networks:
+  neurorun:
+
+volumes:
+  mongo_data:
