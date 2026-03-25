@@ -28,7 +28,10 @@ type Config struct {
 func Load() (*Config, error) {
 	_ = godotenv.Load()
 
-	frontend := getenv("FRONTEND_URL", "http://localhost:3000")
+	frontend := normalizePrimaryFrontendURL(getenv("FRONTEND_URL", "http://localhost:3000"))
+	if frontend == "" {
+		frontend = "http://localhost:3000"
+	}
 	c := &Config{
 		Port:               getenv("PORT", "8080"),
 		ListenHost:         strings.TrimSpace(os.Getenv("LISTEN_HOST")),
@@ -92,6 +95,37 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// normalizePrimaryFrontendURL retourne une seule origine pour Strava (redirects HTTP).
+// FRONTEND_URL avec plusieurs URLs séparées par des virgules produit sinon une Location
+// invalide → page chrome-error:// et « Unsafe attempt to load URL… ».
+func normalizePrimaryFrontendURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, ",")
+	var trimmed []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			trimmed = append(trimmed, p)
+		}
+	}
+	if len(trimmed) == 0 {
+		return ""
+	}
+	if len(trimmed) == 1 {
+		return trimmed[0]
+	}
+	for _, u := range trimmed {
+		low := strings.ToLower(u)
+		if strings.HasPrefix(low, "https://") && !strings.Contains(low, "localhost") && !strings.Contains(low, "127.0.0.1") {
+			return u
+		}
+	}
+	return trimmed[0]
 }
 
 // envBool : vrai si 1, true, yes (insensible à la casse).
