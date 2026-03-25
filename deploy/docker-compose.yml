@@ -1,30 +1,17 @@
-# Back + Mongo seulement — sur le VPS : dossier back/
+# API seulement — MongoDB via MONGODB_URI dans .env (ex. Atlas).
+# Sur le VPS : dossier deploy/ (ou back/)
 #   cp .env.example .env && nano .env
 #   docker login ghcr.io  # si images privées
 #   docker compose pull && docker compose up -d
 
 services:
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    volumes:
-      - mongo_data:/data/db
-    networks: [neurorun]
-
   api:
     image: ghcr.io/mathiascoutant/neurorun-back:latest
     restart: unless-stopped
     env_file: .env
-    environment:
-      MONGODB_URI: mongodb://mongo:27017/runapp
-    depends_on:
-      - mongo
     ports:
       - "127.0.0.1:9081:8080"
     networks: [neurorun]
 
 networks:
   neurorun:
-
-volumes:
-  mongo_data:
