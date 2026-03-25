@@ -219,6 +219,17 @@ func (d *DB) GetGoalByUser(ctx context.Context, userID, goalID primitive.ObjectI
 	return &g, nil
 }
 
+func (d *DB) DeleteGoalByUser(ctx context.Context, userID, goalID primitive.ObjectID) error {
+	res, err := d.goals.DeleteOne(ctx, bson.M{"_id": goalID, "user_id": userID})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (d *DB) AppendGoalCoachTurns(ctx context.Context, userID, goalID primitive.ObjectID, userText, assistantText string) error {
 	now := time.Now().UTC()
 	turns := []models.ChatTurn{

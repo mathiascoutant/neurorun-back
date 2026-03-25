@@ -30,7 +30,7 @@ func New(clientID, clientSecret string) *Client {
 	return &Client{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
-		HTTP:         &http.Client{Timeout: 30 * time.Second},
+		HTTP:         &http.Client{Timeout: 75 * time.Second},
 	}
 }
 

@@ -46,7 +46,7 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.CORSAllowed,
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: false,
 		MaxAge:           300,

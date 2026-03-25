@@ -131,6 +131,55 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, userPublic(u))
 }
 
+func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !u.HasStrava() {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
+		return
+	}
+	access, err := h.ensureStravaAccess(r.Context(), u)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+		return
+	}
+
+	period := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("period")))
+	if period == "" {
+		period = "30d"
+	}
+	var after *int64
+	now := time.Now().UTC()
+	switch period {
+	case "7d":
+		t := now.AddDate(0, 0, -7).Unix()
+		after = &t
+	case "30d":
+		t := now.AddDate(0, 0, -30).Unix()
+		after = &t
+	case "90d", "3m":
+		t := now.AddDate(0, 0, -90).Unix()
+		after = &t
+	case "365d", "1y":
+		t := now.AddDate(0, 0, -365).Unix()
+		after = &t
+	case "all":
+		after = nil
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "période invalide : 7d, 30d, 90d, 365d ou all",
+		})
+		return
+	}
+
+	runs, err := h.strava.FetchRunActivities(r.Context(), access, after)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+		return
+	}
+	payload := strava.BuildDashboard(runs, period)
+	writeJSON(w, http.StatusOK, payload)
+}
+
 func (h *Handlers) StravaAuthorizeURL(w http.ResponseWriter, r *http.Request) {
 	if !h.cfg.StravaConfigured() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -184,7 +233,7 @@ func (h *Handlers) StravaCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, h.cfg.FrontendURL+"/chat?strava=ok", http.StatusFound)
+	http.Redirect(w, r, h.cfg.FrontendURL+"/dashboard?strava=ok", http.StatusFound)
 }
 
 func (h *Handlers) ensureStravaAccess(ctx context.Context, u *models.User) (string, error) {
@@ -444,6 +493,25 @@ func (h *Handlers) GetGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, g)
+}
+
+func (h *Handlers) DeleteGoal(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	idHex := chi.URLParam(r, "id")
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
+		return
+	}
+	if err := h.db.DeleteGoalByUser(r.Context(), u.ID, oid); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "suppression impossible"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
@@ -773,6 +841,7 @@ func (h *Handlers) Mount(r chi.Router) {
 	r.Group(func(pr chi.Router) {
 		pr.Use(h.AuthMiddleware)
 		pr.Get("/me", h.Me)
+		pr.Get("/strava/dashboard", h.StravaDashboard)
 		pr.Get("/strava/authorize", h.StravaAuthorizeURL)
 		pr.Post("/conversations", h.CreateConversation)
 		pr.Get("/conversations", h.ListConversations)
@@ -781,6 +850,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/goals", h.CreateGoal)
 		pr.Get("/goals", h.ListGoals)
 		pr.Post("/goals/{id}/chat", h.GoalChat)
+		pr.Delete("/goals/{id}", h.DeleteGoal)
 		pr.Get("/goals/{id}", h.GetGoal)
 		pr.Post("/chat", h.Chat)
 	})
