@@ -13,6 +13,7 @@ import (
 
 	"runapp/internal/auth"
 	"runapp/internal/config"
+	"runapp/internal/goalcalendar"
 	"runapp/internal/models"
 	oai "runapp/internal/openai"
 	"runapp/internal/store"
@@ -605,9 +606,11 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 	}
 	actsJSON, _ := json.Marshal(acts)
 
-	system := `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces, peu de blocs denses. Niveau accessible : si tu cites min/km, rappelle une fois que c'est « minutes pour parcourir 1 km ».
+	system := `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces, peu de blocs denses. Niveau accessible : une seule fois, rappelle que min/km = minutes pour parcourir 1 km.
 
 Tu reçois des activités Strava en JSON + un objectif (distance, chrono, semaines restantes, séances/semaine).
+
+**Impératif chiffres** : le plan doit être **exécutable sans deviner**. Dès que tu donnes une séance, indique des **allures en min/km** (fourchettes courtes, ex. 5:35–5:50) et, pour tout fractionné, le **temps cible par répétition** (ex. 800 m viser ~2:40–2:55). Si un chrono est chiffré pour la course (ex. 50 min sur 10 km), calcule l’**allure course cible** (temps total en minutes ÷ distance en km) et déduis des repères cohérents : facile/endurance un peu plus lent que la course, seuil/tempo entre les deux, fractions un peu plus vite que l’allure course — adapte à ce que montrent les données JSON.
 
 Rédige un plan en Markdown avec EXACTEMENT ces sections (titres ## comme ci-dessous), dans l'ordre :
 
@@ -620,12 +623,15 @@ L'utilisateur a déjà lu un avis détaillé. 2 phrases maximum : à quel point 
 ## Les 3 idées à retenir
 Exactement 3 puces courtes : ce qui va t'aider à progresser sans te blesser.
 
+## Repères d'allure pour cette prépa
+5 à 8 puces **avec chiffres** : **allure course (objectif)** en min/km ; **allure facile / endurance** ; **allure seuil ou tempo ou « un peu sous allure course »** ; pour au moins deux distances de fraction courantes (ex. 400 m et 800 m ou 1 km), donne un **temps cible par répétition** cohérent avec l’objectif. Une ligne peut rappeler l’échauffement **10–15 min** ou **1,5–2 km** à allure facile. Pas de jargon non chiffré du type « allure 10 km » sans min/km à côté.
+
 ## Calendrier — semaine par semaine
 Pour chaque semaine, utilise un sous-titre ### Semaine 1, ### Semaine 2, etc. (autant que les semaines disponibles jusqu'à la course).
-Dans chaque semaine : puces courtes (Séance 1, Séance 2…) avec volume indicatif en km et type d'effort (facile / moyen / un peu plus vite). Respecte le nombre de séances par semaine demandé. Si une seule séance/semaine, une seule puce claire.
+Pour **chaque** séance (Séance 1, 2, …) une **seule puce** ou une **liste courte** qui précise **dans cet ordre** : (1) échauffement avec durée ou km + allure facile en min/km ; (2) corps de séance avec volumes, **nombre de répétitions**, et pour chaque type de rep **temps visé** ou **allure min/km** ; (3) retour au calme (km ou min + allure). Évite les formulations vagues (« tranquille », « un peu vite ») sans fourchette min/km. Respecte le nombre de séances par semaine demandé.
 
 ## Dans les derniers jours avant la course
-2 à 4 puces : repos, dernier petit effort éventuel, pas de gros volume.
+2 à 4 puces : repos, dernier petit effort **avec durée et allure facile** si tu en proposes un, pas de gros volume.
 
 ## Sécurité
 2 puces : douleur anormale = arrêt et avis médical ; hydratation et écoute du corps.
@@ -641,12 +647,18 @@ Pas de paragraphes de plus de 3 phrases d'affilée. Pas de listes numérotées l
 Chrono ou intention : ` + targetTime + `.
 Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
 Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
-Rédige le plan complet en respectant les titres et le style demandés. Pas de vouvoiement.`
+Rédige le plan complet en respectant les titres et le style demandés. Pas de vouvoiement.
+Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des temps par répétition.`
 
 	plan, err := h.openai.Chat(r.Context(), system, userQ)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
+	}
+
+	planned, exErr := goalcalendar.ExtractPlannedSessions(r.Context(), h.openai, plan, b.Weeks, b.SessionsPerWeek)
+	if exErr != nil || len(planned) == 0 {
+		planned = goalcalendar.FallbackPlannedSessionsFromPlan(plan, b.Weeks, b.SessionsPerWeek)
 	}
 
 	now := time.Now().UTC()
@@ -666,6 +678,7 @@ Rédige le plan complet en respectant les titres et le style demandés. Pas de v
 		SessionsPerWeek: b.SessionsPerWeek,
 		TargetTime:      targetTime,
 		Plan:            plan,
+		PlannedSessions: planned,
 		CoachThread:     []models.ChatTurn{welcome},
 	}
 	if err := h.db.CreateGoal(r.Context(), g); err != nil {
@@ -749,7 +762,7 @@ Tu discutes de L'OBJECTIF déjà enregistré (distance, chrono visé, semaines, 
 - Tu ne diagnostiques pas. Si douleur forte, persistante ou inquiétante : encourage à consulter un·e professionnel·le de santé.
 
 **Forme des réponses**
-3 à 8 phrases en général, ou quelques puces courtes. Pas de réécriture complète du plan sauf demande explicite.
+3 à 8 phrases en général, ou quelques puces courtes. Pas de réécriture complète du plan sauf demande explicite. Si tu détailles une séance ou un ajustement, donne des **allures min/km** et des **temps par répétition** quand c’est du fractionné.
 
 **Objectif enregistré**
 - Distance : ` + g.DistanceLabel + `
@@ -851,6 +864,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/goals", h.ListGoals)
 		pr.Post("/goals/{id}/chat", h.GoalChat)
 		pr.Delete("/goals/{id}", h.DeleteGoal)
+		pr.Get("/goals/{id}/calendar", h.GoalCalendar)
 		pr.Get("/goals/{id}", h.GetGoal)
 		pr.Post("/chat", h.Chat)
 	})

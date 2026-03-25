@@ -14,6 +14,7 @@ const dashboardPerPage = 200
 
 // RunActivity est une sortie course Strava parsée pour le dashboard.
 type RunActivity struct {
+	ID        int64
 	Name      string
 	Type      string
 	StartAt   time.Time
@@ -104,7 +105,9 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 		}
 	}
 	name, _ := m["name"].(string)
+	id := int64(jsonFloat(m["id"]))
 	return RunActivity{
+		ID:        id,
 		Name:      name,
 		Type:      typ,
 		StartAt:   st.UTC(),
