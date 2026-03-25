@@ -1,6 +1,6 @@
-# Usage sur le VPS, depuis ce dossier :
+# Back + Mongo seulement — sur le VPS : dossier back/
 #   cp .env.example .env && nano .env
-#   docker login ghcr.io   # si les images sont privées
+#   docker login ghcr.io  # si images privées
 #   docker compose pull && docker compose up -d
 
 services:
@@ -21,13 +21,6 @@ services:
       - mongo
     ports:
       - "127.0.0.1:9081:8080"
-    networks: [neurorun]
-
-  web:
-    image: ghcr.io/mathiascoutant/neurorun-front:latest
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:9080:80"
     networks: [neurorun]
 
 networks:
