@@ -1,6 +1,7 @@
-# API — MongoDB via .env (Atlas). network_mode: host évite souvent les échecs TLS (« tls: internal error »)
-# avec le réseau bridge Docker sur certains VPS. Dans .env : LISTEN_HOST=127.0.0.1 et PORT=9081
-# (nginx sur la machine pointe vers http://127.0.0.1:9081). Linux uniquement pour host.
+# API — MongoDB via .env (Atlas). network_mode: host + LISTEN_HOST évite souvent les soucis TLS / bridge.
+# Si « compose » crée un réseau *neurorun*, ton fichier est obsolète : il doit ressembler à celui du dépôt
+# (pas de « networks: neurorun », pas de « ports: », uniquement network_mode: host).
+# .env : LISTEN_HOST=127.0.0.1, PORT=9081 (nginx → http://127.0.0.1:9081). Linux uniquement pour host.
 #
 #   cp .env.example .env && nano .env
 #   docker compose pull && docker compose up -d

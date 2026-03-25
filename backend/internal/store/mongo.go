@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
+	"strings"
 	"time"
 
 	"runapp/internal/models"
@@ -12,6 +14,14 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+func mongoURIUsesTLS(uri string) bool {
+	if strings.HasPrefix(strings.ToLower(uri), "mongodb+srv://") {
+		return true
+	}
+	u := strings.ToLower(uri)
+	return strings.Contains(u, "tls=true") || strings.Contains(u, "ssl=true")
+}
 
 type DB struct {
 	client          *mongo.Client
@@ -36,6 +46,14 @@ func Connect(uri, dbName string, forceIPv4 bool) (*DB, error) {
 	opts := options.Client().ApplyURI(uri)
 	if forceIPv4 {
 		opts.SetDialer(tcp4OnlyDialer{})
+	}
+	// Certains chemins réseau (FAI / hébergeur) se trompent sur TLS 1.3 et renvoient
+	// « remote error: tls: internal error ». Atlas supporte TLS 1.2 ; SNI est complété par le driver.
+	if mongoURIUsesTLS(uri) {
+		opts.SetTLSConfig(&tls.Config{
+			MinVersion: tls.VersionTLS12,
+			MaxVersion: tls.VersionTLS12,
+		})
 	}
 	client, err := mongo.Connect(ctx, opts)
 	if err != nil {
