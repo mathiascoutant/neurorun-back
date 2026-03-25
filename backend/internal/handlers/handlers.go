@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"runapp/internal/auth"
 	"runapp/internal/config"
@@ -203,8 +206,85 @@ func (h *Handlers) ensureStravaAccess(ctx context.Context, u *models.User) (stri
 	return tok, nil
 }
 
+const chatHistoryMaxTurns = 24 // tours stockés envoyés au modèle (user+assistant)
+
 type chatBody struct {
-	Message string `json:"message"`
+	Message          string `json:"message"`
+	ConversationID   string `json:"conversation_id,omitempty"`
+}
+
+type goalBody struct {
+	DistanceKm       float64 `json:"distance_km"`
+	Weeks            int     `json:"weeks"`
+	SessionsPerWeek  int     `json:"sessions_per_week"`
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:max]) + "…"
+}
+
+func goalDistanceLabel(km float64) (string, float64, bool) {
+	k := int(math.Round(km))
+	normalized := float64(k)
+	switch k {
+	case 5:
+		return "5 km", normalized, true
+	case 10:
+		return "10 km", normalized, true
+	case 21:
+		return "21 km (semi-marathon)", normalized, true
+	case 42:
+		return "42 km (marathon)", normalized, true
+	default:
+		return "", 0, false
+	}
+}
+
+func (h *Handlers) CreateConversation(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	conv, err := h.db.CreateConversation(r.Context(), u.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "impossible de créer la conversation"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, conv)
+}
+
+func (h *Handlers) ListConversations(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	list, err := h.db.ListConversationsByUser(r.Context(), u.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste impossible"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversations": list})
+}
+
+func (h *Handlers) GetConversation(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	idHex := chi.URLParam(r, "id")
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
+		return
+	}
+	conv, err := h.db.GetConversationByUser(r.Context(), u.ID, oid)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur"})
+		return
+	}
+	writeJSON(w, http.StatusOK, conv)
 }
 
 func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +303,35 @@ func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 	if b.Message == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message vide"})
 		return
+	}
+
+	var conv *models.Conversation
+	var convID primitive.ObjectID
+	if strings.TrimSpace(b.ConversationID) == "" {
+		c, err := h.db.CreateConversation(r.Context(), u.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "conversation"})
+			return
+		}
+		conv = c
+		convID = c.ID
+	} else {
+		oid, err := primitive.ObjectIDFromHex(strings.TrimSpace(b.ConversationID))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "conversation_id invalide"})
+			return
+		}
+		c, err := h.db.GetConversationByUser(r.Context(), u.ID, oid)
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "conversation introuvable"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur"})
+			return
+		}
+		conv = c
+		convID = oid
 	}
 
 	access, err := h.ensureStravaAccess(r.Context(), u)
@@ -245,13 +354,148 @@ func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 		`Si une info manque, une seule phrase. ` +
 		`Activités récentes (JSON): ` + string(actsJSON)
 
-	reply, err := h.openai.Chat(r.Context(), system, b.Message)
+	msgs := []oai.ChatMessage{{Role: "system", Content: system}}
+	hist := conv.Messages
+	if len(hist) > chatHistoryMaxTurns {
+		hist = hist[len(hist)-chatHistoryMaxTurns:]
+	}
+	for _, t := range hist {
+		role := t.Role
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		msgs = append(msgs, oai.ChatMessage{Role: role, Content: t.Text})
+	}
+	msgs = append(msgs, oai.ChatMessage{Role: "user", Content: b.Message})
+
+	reply, err := h.openai.ChatMessages(r.Context(), msgs)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
+	var titlePtr *string
+	if len(conv.Messages) == 0 {
+		t := truncateRunes(b.Message, 52)
+		titlePtr = &t
+	}
+	if err := h.db.AppendConversationTurns(r.Context(), u.ID, convID, b.Message, reply, titlePtr); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde message"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"reply":           reply,
+		"conversation_id": convID.Hex(),
+	})
+}
+
+func (h *Handlers) ListGoals(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	list, err := h.db.ListGoalsByUser(r.Context(), u.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste objectifs"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"goals": list})
+}
+
+func (h *Handlers) GetGoal(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	idHex := chi.URLParam(r, "id")
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
+		return
+	}
+	g, err := h.db.GetGoalByUser(r.Context(), u.ID, oid)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur"})
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
+func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !u.HasStrava() {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
+		return
+	}
+
+	var b goalBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	label, distKm, ok := goalDistanceLabel(b.DistanceKm)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "distance_km doit être 5, 10, 21 ou 42"})
+		return
+	}
+	if b.Weeks < 1 || b.Weeks > 52 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "weeks entre 1 et 52"})
+		return
+	}
+	if b.SessionsPerWeek < 1 || b.SessionsPerWeek > 7 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sessions_per_week entre 1 et 7"})
+		return
+	}
+
+	access, err := h.ensureStravaAccess(r.Context(), u)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+		return
+	}
+
+	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+		return
+	}
+	actsJSON, _ := json.Marshal(acts)
+
+	system := `Tu es un coach course à pied expert (français). Tu reçois jusqu'à 50 activités Strava récentes en JSON + un objectif (distance, délai, séances/sem.).
+
+Rédige un plan d'entraînement détaillé en Markdown :
+1. **Synthèse forme actuelle** (3 à 6 puces : volume récent, allures indicatives, régularité — uniquement à partir des données.)
+2. **Principes** (progression, récup, intensité vs volume).
+3. **Semaine par semaine** : pour chaque semaine, indique approximatemment volume cible, nombre de sorties (dont la sortie longue), 1 séance de qualité si pertinent à ce niveau, jours de récup/active recovery. Adapte au nombre de séances demandé par semaine.
+4. **Dernière ligne droite / affûtage** si l'échéance le justifie.
+5. **Rappels sécurité** : douleur persistante = arrêt et avis pro.
+
+Ne invente pas de chiffres absents du JSON. Utilise tendances et réalisme selon le profil historique.
+
+**Activités (JSON) :** ` + string(actsJSON)
+
+	userQ := `Objectif course : ` + label + `.
+Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
+Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
+Propose un plan concret et personnalisé.`
+
+	plan, err := h.openai.Chat(r.Context(), system, userQ)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
+		return
+	}
+
+	g := &models.Goal{
+		UserID:          u.ID,
+		DistanceKm:      distKm,
+		DistanceLabel:   label,
+		Weeks:           b.Weeks,
+		SessionsPerWeek: b.SessionsPerWeek,
+		Plan:            plan,
+	}
+	if err := h.db.CreateGoal(r.Context(), g); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde objectif"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, g)
 }
 
 type ctxUser struct{}
@@ -306,6 +550,12 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Use(h.AuthMiddleware)
 		pr.Get("/me", h.Me)
 		pr.Get("/strava/authorize", h.StravaAuthorizeURL)
+		pr.Post("/conversations", h.CreateConversation)
+		pr.Get("/conversations", h.ListConversations)
+		pr.Get("/conversations/{id}", h.GetConversation)
+		pr.Post("/goals", h.CreateGoal)
+		pr.Get("/goals", h.ListGoals)
+		pr.Get("/goals/{id}", h.GetGoal)
 		pr.Post("/chat", h.Chat)
 	})
 }

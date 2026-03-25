@@ -24,10 +24,12 @@ func New(apiKey, model string) *Client {
 	}
 }
 
-type chatMessage struct {
+type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
+
+type chatMessage = ChatMessage
 
 type chatRequest struct {
 	Model    string        `json:"model"`
@@ -43,13 +45,19 @@ type chatResponse struct {
 	} `json:"error"`
 }
 
+// Chat envoie un unique tour system + user (rétrocompatible).
 func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	return c.ChatMessages(ctx, []ChatMessage{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userMessage},
+	})
+}
+
+// ChatMessages envoie une liste complète de messages (system en premier typiquement).
+func (c *Client) ChatMessages(ctx context.Context, messages []ChatMessage) (string, error) {
 	body := chatRequest{
-		Model: c.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userMessage},
-		},
+		Model:    c.Model,
+		Messages: messages,
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
