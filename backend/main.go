@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "time/tzdata" /* fuseaux IANA (Europe/Paris) sans fichiers /usr/share/zoneinfo */
+
 	"runapp/internal/config"
 	"runapp/internal/handlers"
 	"runapp/internal/store"
