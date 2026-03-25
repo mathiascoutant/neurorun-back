@@ -13,6 +13,7 @@ type Goal struct {
 	DistanceLabel   string             `bson:"distance_label" json:"distance_label"`
 	Weeks           int                `bson:"weeks" json:"weeks"`
 	SessionsPerWeek int                `bson:"sessions_per_week" json:"sessions_per_week"`
+	TargetTime      string             `bson:"target_time,omitempty" json:"target_time"`
 	Plan            string             `bson:"plan" json:"plan"`
 	CreatedAt       time.Time          `bson:"created_at" json:"created_at"`
 }

@@ -119,10 +119,10 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 
 func userPublic(u *models.User) map[string]any {
 	return map[string]any{
-		"id":          u.ID.Hex(),
-		"email":       u.Email,
+		"id":            u.ID.Hex(),
+		"email":         u.Email,
 		"strava_linked": u.HasStrava(),
-		"created_at":  u.CreatedAt.Format(time.RFC3339),
+		"created_at":    u.CreatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -209,14 +209,15 @@ func (h *Handlers) ensureStravaAccess(ctx context.Context, u *models.User) (stri
 const chatHistoryMaxTurns = 24 // tours stockés envoyés au modèle (user+assistant)
 
 type chatBody struct {
-	Message          string `json:"message"`
-	ConversationID   string `json:"conversation_id,omitempty"`
+	Message        string `json:"message"`
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 type goalBody struct {
-	DistanceKm       float64 `json:"distance_km"`
-	Weeks            int     `json:"weeks"`
-	SessionsPerWeek  int     `json:"sessions_per_week"`
+	DistanceKm      float64 `json:"distance_km"`
+	Weeks           int     `json:"weeks"`
+	SessionsPerWeek int     `json:"sessions_per_week"`
+	TargetTime      string  `json:"target_time"`
 }
 
 func truncateRunes(s string, max int) string {
@@ -445,6 +446,15 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sessions_per_week entre 1 et 7"})
 		return
 	}
+	targetTime := strings.TrimSpace(b.TargetTime)
+	if len(targetTime) < 2 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "indique le temps visé sur la distance (ex. 50 min, 1h45, finir sans chrono précis)"})
+		return
+	}
+	if utf8.RuneCountInString(targetTime) > 120 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "temps visé trop long (120 caractères max)"})
+		return
+	}
 
 	access, err := h.ensureStravaAccess(r.Context(), u)
 	if err != nil {
@@ -459,23 +469,29 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 	}
 	actsJSON, _ := json.Marshal(acts)
 
-	system := `Tu es un coach course à pied expert (français). Tu reçois jusqu'à 50 activités Strava récentes en JSON + un objectif (distance, délai, séances/sem.).
+	system := `Tu es un coach course à pied expert (français). Tu reçois jusqu'à 50 activités Strava récentes en JSON + un objectif (distance, chrono visé, nombre de semaines avant la course, séances/semaine).
 
-Rédige un plan d'entraînement détaillé en Markdown :
-1. **Synthèse forme actuelle** (3 à 6 puces : volume récent, allures indicatives, régularité — uniquement à partir des données.)
-2. **Principes** (progression, récup, intensité vs volume).
-3. **Semaine par semaine** : pour chaque semaine, indique approximatemment volume cible, nombre de sorties (dont la sortie longue), 1 séance de qualité si pertinent à ce niveau, jours de récup/active recovery. Adapte au nombre de séances demandé par semaine.
-4. **Dernière ligne droite / affûtage** si l'échéance le justifie.
-5. **Rappels sécurité** : douleur persistante = arrêt et avis pro.
+Rédige un plan d'entraînement détaillé en Markdown. Ordre imposé :
 
-Ne invente pas de chiffres absents du JSON. Utilise tendances et réalisme selon le profil historique.
+1. **Faisabilité du chrono visé** (obligatoire, en premier, 4 à 8 phrases max) : à partir UNIQUEMENT des tendances dans le JSON (allures, distances, régularité, volume) et des paramètres de l'objectif (distance, temps vis-à-vis de ce que montrent les sorties, nombre de semaines restantes, nombre de séances/semaine), dis clairement si l'objectif te paraît **réaliste**, **ambitieux mais jouable**, ou **très tendu / peu réaliste** dans ces conditions. Si c'est trop tendu, dis-le franchement et propose une alternative (chrono intermédiaire, plus de semaines, ou plus de séances si pertinent). Ne invente pas de chiffres absents des activités.
+
+2. **Synthèse forme actuelle** (3 à 6 puces, données JSON seulement).
+
+3. **Principes** (progression, récup, intensité vs volume).
+
+4. **Semaine par semaine** : volume approximatif, sortie longue, séance de qualité si adapté, récup. Respecte le nombre de séances par semaine demandé.
+
+5. **Affûtage** si l'échéance le justifie.
+
+6. **Rappels sécurité** (douleur persistante = stop + avis pro).
 
 **Activités (JSON) :** ` + string(actsJSON)
 
 	userQ := `Objectif course : ` + label + `.
+Chrono ou intention chrono visée : ` + targetTime + `.
 Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
 Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
-Propose un plan concret et personnalisé.`
+Rédige le plan et commence par le bloc « Faisabilité du chrono visé » comme demandé.`
 
 	plan, err := h.openai.Chat(r.Context(), system, userQ)
 	if err != nil {
@@ -489,6 +505,7 @@ Propose un plan concret et personnalisé.`
 		DistanceLabel:   label,
 		Weeks:           b.Weeks,
 		SessionsPerWeek: b.SessionsPerWeek,
+		TargetTime:      targetTime,
 		Plan:            plan,
 	}
 	if err := h.db.CreateGoal(r.Context(), g); err != nil {
