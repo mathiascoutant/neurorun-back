@@ -239,6 +239,9 @@ func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 	actsJSON, _ := json.Marshal(acts)
 
 	system := `Tu es un coach course à pied et vélo (style Strava). Tu analyses les activités fournies (JSON) et réponds en français de façon concise et encourageante. ` +
+		`Chaque activité utilise des unités lisibles : distance en kilomètres (distance_km), durées en minutes (moving_time_min, elapsed_time_min), ` +
+		`vitesses en km/h (average_speed_kmh), allure moyenne éventuelle en minutes par km (pace_min_per_km), dénivelé en mètres (elevation_gain_m), fréquence cardiaque en bpm. ` +
+		`Dans tes réponses, parle toujours en km et en minutes (pas en mètres ni en secondes pour décrire une sortie). Pour l’allure, utilise min/km ou une formulation équivalente. ` +
 		`Si les données manquent pour une question, dis-le. Donne des conseils pratiques (allure, récup, volume). ` +
 		`Activités récentes (JSON): ` + string(actsJSON)
 

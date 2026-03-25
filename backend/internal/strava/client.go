@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"time"
@@ -163,20 +164,60 @@ func (c *Client) ActivitiesSummary(ctx context.Context, accessToken string, perP
 
 	out := make([]map[string]any, 0, len(raw))
 	for _, act := range raw {
+		distM := jsonFloat(act["distance"])
+		movS := jsonFloat(act["moving_time"])
+		elpS := jsonFloat(act["elapsed_time"])
+		avgMs := jsonFloat(act["average_speed"])
+		maxMs := jsonFloat(act["max_speed"])
+
 		m := map[string]any{
-			"name":       act["name"],
-			"type":       act["type"],
-			"distance_m": act["distance"],
-			"moving_time_s": act["moving_time"],
-			"elapsed_time_s": act["elapsed_time"],
-			"total_elevation_gain": act["total_elevation_gain"],
+			"name":                 act["name"],
+			"type":                 act["type"],
 			"start_date":           act["start_date"],
-			"average_speed":        act["average_speed"],
-			"max_speed":            act["max_speed"],
+			"distance_km":          round2(distM / 1000),
+			"moving_time_min":      round1(movS / 60),
+			"elapsed_time_min":     round1(elpS / 60),
+			"elevation_gain_m":     act["total_elevation_gain"],
+			"average_speed_kmh":    round2(avgMs * 3.6),
+			"max_speed_kmh":        round2(maxMs * 3.6),
 			"average_heartrate":    act["average_heartrate"],
 			"max_heartrate":        act["max_heartrate"],
+		}
+		// Allure moyenne (min/km) si course avec vitesse > 0
+		if avgMs > 0 && distM >= 100 {
+			m["pace_min_per_km"] = round2(1000 / (60 * avgMs))
 		}
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+func jsonFloat(v any) float64 {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int:
+		return float64(x)
+	case int64:
+		return float64(x)
+	default:
+		return 0
+	}
+}
+
+func round1(x float64) float64 {
+	if math.IsNaN(x) || math.IsInf(x, 0) {
+		return 0
+	}
+	return math.Round(x*10) / 10
+}
+
+func round2(x float64) float64 {
+	if math.IsNaN(x) || math.IsInf(x, 0) {
+		return 0
+	}
+	return math.Round(x*100) / 100
 }
