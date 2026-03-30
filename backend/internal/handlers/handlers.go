@@ -855,6 +855,8 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Use(h.AuthMiddleware)
 		pr.Get("/me", h.Me)
 		pr.Get("/strava/dashboard", h.StravaDashboard)
+		pr.Get("/strava/forecast", h.StravaRaceForecast)
+		pr.Post("/strava/forecast/adjust", h.StravaRaceForecastAdjust)
 		pr.Get("/strava/authorize", h.StravaAuthorizeURL)
 		pr.Post("/conversations", h.CreateConversation)
 		pr.Get("/conversations", h.ListConversations)
