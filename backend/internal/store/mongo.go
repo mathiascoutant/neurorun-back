@@ -268,6 +268,44 @@ func (d *DB) DeleteGoalByUser(ctx context.Context, userID, goalID primitive.Obje
 	return nil
 }
 
+// UpdateGoalTrainingFields remplace le plan Markdown, les séances extraites et les paramètres liés.
+// customOffsets : longueur doit égaler spw et valeurs 0–6 (lun–dim) ; sinon passer nil pour le motif par défaut.
+func (d *DB) UpdateGoalTrainingFields(ctx context.Context, userID, goalID primitive.ObjectID, plan string, planned []models.PlannedSession, weeks, spw int, target string, customOffsets []int) error {
+	set := bson.M{
+		"plan":               plan,
+		"planned_sessions":   planned,
+		"sessions_per_week":  spw,
+		"weeks":              weeks,
+		"target_time":        target,
+	}
+	update := bson.M{"$set": set}
+	useCustom := false
+	if len(customOffsets) == spw && spw > 0 {
+		ok := true
+		for _, x := range customOffsets {
+			if x < 0 || x > 6 {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			set["calendar_day_offsets"] = customOffsets
+			useCustom = true
+		}
+	}
+	if !useCustom {
+		update["$unset"] = bson.M{"calendar_day_offsets": ""}
+	}
+	res, err := d.goals.UpdateOne(ctx, bson.M{"_id": goalID, "user_id": userID}, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (d *DB) AppendGoalCoachTurns(ctx context.Context, userID, goalID primitive.ObjectID, userText, assistantText string) error {
 	now := time.Now().UTC()
 	turns := []models.ChatTurn{

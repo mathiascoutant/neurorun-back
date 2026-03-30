@@ -25,6 +25,8 @@ type Goal struct {
 	TargetTime       string             `bson:"target_time,omitempty" json:"target_time"`
 	Plan             string             `bson:"plan" json:"plan"`
 	PlannedSessions  []PlannedSession   `bson:"planned_sessions,omitempty" json:"planned_sessions,omitempty"`
+	// CalendarDayOffsets : jours 0=lundi…6=dimanche ; si absent ou longueur ≠ sessions_per_week, on utilise le motif par défaut.
+	CalendarDayOffsets []int `bson:"calendar_day_offsets,omitempty" json:"calendar_day_offsets,omitempty"`
 	CoachThread      []ChatTurn         `bson:"coach_thread,omitempty" json:"coach_thread,omitempty"`
 	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`
 }

@@ -7,6 +7,28 @@ import (
 	"runapp/internal/models"
 )
 
+// EffectiveDayOffsets renvoie les décalages de jour (0=lun) pour les séances, ou le défaut selon sessions_per_week.
+func EffectiveDayOffsets(g *models.Goal) []int {
+	if g == nil || g.SessionsPerWeek < 1 {
+		return []int{0}
+	}
+	n := g.SessionsPerWeek
+	off := g.CalendarDayOffsets
+	if len(off) == n {
+		ok := true
+		for _, d := range off {
+			if d < 0 || d > 6 {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return off
+		}
+	}
+	return dayOffsetsInWeek(n)
+}
+
 // dayOffsetsInWeek répartit les séances dans la semaine (0 = lundi … 6 = dimanche).
 func dayOffsetsInWeek(sessionsPerWeek int) []int {
 	switch sessionsPerWeek {
@@ -52,8 +74,8 @@ func MondayContaining(t time.Time, loc *time.Location) time.Time {
 }
 
 // SessionLocalDate calcule la date (00:00 local) de la séance week/session (1-based).
-func SessionLocalDate(createdAt time.Time, week, session, spw int, loc *time.Location) time.Time {
-	off := dayOffsetsInWeek(spw)
+func SessionLocalDate(createdAt time.Time, week, session int, g *models.Goal, loc *time.Location) time.Time {
+	off := EffectiveDayOffsets(g)
 	if week < 1 || session < 1 || session > len(off) {
 		return time.Time{}
 	}

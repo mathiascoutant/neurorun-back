@@ -50,7 +50,7 @@ func BuildCalendarItems(g *models.Goal, runs []strava.RunActivity, loc *time.Loc
 			if ps.Summary == "" {
 				ps.Summary = fmt.Sprintf("Sem.%d séance %d (~%.1f km)", w, s, ps.DistanceKm)
 			}
-			day := SessionLocalDate(g.CreatedAt, w, s, g.SessionsPerWeek, loc)
+			day := SessionLocalDate(g.CreatedAt, w, s, g, loc)
 			if day.IsZero() {
 				continue
 			}
