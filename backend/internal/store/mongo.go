@@ -29,6 +29,7 @@ type DB struct {
 	users           *mongo.Collection
 	conversations   *mongo.Collection
 	goals           *mongo.Collection
+	liveRuns        *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -74,6 +75,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	users := database.Collection("users")
 	conversations := database.Collection("conversations")
 	goals := database.Collection("goals")
+	liveRuns := database.Collection("live_runs")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -84,12 +86,16 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	_, _ = goals.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
 	})
+	_, _ = liveRuns.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+	})
 	return &DB{
 		client:        client,
 		database:      database,
 		users:         users,
 		conversations: conversations,
 		goals:         goals,
+		liveRuns:      liveRuns,
 	}, nil
 }
 
@@ -305,6 +311,52 @@ func (d *DB) UpdateGoalTrainingFields(ctx context.Context, userID, goalID primit
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (d *DB) CreateLiveRun(ctx context.Context, run *models.LiveRun) error {
+	if run.ID.IsZero() {
+		run.ID = primitive.NewObjectID()
+	}
+	if run.CreatedAt.IsZero() {
+		run.CreatedAt = time.Now().UTC()
+	}
+	_, err := d.liveRuns.InsertOne(ctx, run)
+	return err
+}
+
+func (d *DB) ListLiveRunsByUser(ctx context.Context, userID primitive.ObjectID, limit int) ([]models.LiveRun, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetLimit(int64(limit))
+	cur, err := d.liveRuns.Find(ctx, bson.M{"user_id": userID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.LiveRun
+	for cur.Next(ctx) {
+		var lr models.LiveRun
+		if err := cur.Decode(&lr); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, cur.Err()
+}
+
+func (d *DB) GetLiveRunByUser(ctx context.Context, userID, runID primitive.ObjectID) (*models.LiveRun, error) {
+	var lr models.LiveRun
+	err := d.liveRuns.FindOne(ctx, bson.M{"_id": runID, "user_id": userID}).Decode(&lr)
+	if err == mongo.ErrNoDocuments {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &lr, nil
 }
 
 func (d *DB) AppendGoalCoachTurns(ctx context.Context, userID, goalID primitive.ObjectID, userText, assistantText string) error {

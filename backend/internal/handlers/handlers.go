@@ -872,5 +872,8 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/goals/{id}/calendar", h.GoalCalendar)
 		pr.Get("/goals/{id}", h.GetGoal)
 		pr.Post("/chat", h.Chat)
+		pr.Post("/live-runs", h.CreateLiveRun)
+		pr.Get("/live-runs", h.ListLiveRuns)
+		pr.Get("/live-runs/{id}", h.GetLiveRun)
 	})
 }
