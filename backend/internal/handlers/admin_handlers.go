@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,12 +40,28 @@ func (h *Handlers) AdminStats(w http.ResponseWriter, r *http.Request) {
 	nStd, _ := h.db.CountUsersStandard(ctx)
 	nStrava, _ := h.db.CountUsersByPlan(ctx, models.PlanStrava)
 	nPerf, _ := h.db.CountUsersByPlan(ctx, models.PlanPerformance)
+
+	cfg, _ := h.db.GetOfferConfig(ctx)
+	cfg.MergeDefaults()
+	ps := cfg.PricesEUR["strava"]
+	pp := cfg.PricesEUR["performance"]
+	mrr := ps*float64(nStrava) + pp*float64(nPerf)
+
+	signups, _ := h.db.SignupsByDayUTC(ctx, 30)
+	top, _ := h.db.TopUsersByActivity(ctx, 10)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"users_total":       total,
-		"users_last_7d":     recent,
-		"users_plan_standard": nStd,
-		"users_plan_strava":   nStrava,
-		"users_plan_performance": nPerf,
+		"users_total":              total,
+		"users_last_7d":            recent,
+		"users_plan_standard":      nStd,
+		"users_plan_strava":        nStrava,
+		"users_plan_performance":   nPerf,
+		"signups_by_day":           signups,
+		"top_active_users":         top,
+		"mrr_estimated_eur":        math.Round(mrr*100) / 100,
+		"prices_eur":               cfg.PricesEUR,
+		"subscribers_strava":       nStrava,
+		"subscribers_performance":  nPerf,
 	})
 }
 
@@ -147,6 +164,33 @@ func (h *Handlers) AdminPatchUser(w http.ResponseWriter, r *http.Request) {
 	}
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": userPublic(u, caps)})
+}
+
+func (h *Handlers) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "DELETE"})
+		return
+	}
+	actor := r.Context().Value(ctxUser{}).(*models.User)
+	idHex := chi.URLParam(r, "id")
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
+		return
+	}
+	if actor.ID == oid {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "impossible de supprimer ton propre compte"})
+		return
+	}
+	if err := h.db.DeleteUserCascade(r.Context(), oid); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "suppression"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handlers) AdminListPromos(w http.ResponseWriter, r *http.Request) {

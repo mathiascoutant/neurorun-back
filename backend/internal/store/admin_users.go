@@ -2,12 +2,14 @@ package store
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"runapp/internal/models"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -122,6 +124,191 @@ func (d *DB) CountGoalsByUser(ctx context.Context, userID primitive.ObjectID) (i
 
 func (d *DB) CountLiveRunsForUser(ctx context.Context, userID primitive.ObjectID) (int64, error) {
 	return d.liveRuns.CountDocuments(ctx, bson.M{"user_id": userID})
+}
+
+// DeleteUserCascade supprime l’utilisateur et ses données liées (conversations, objectifs, courses live).
+func (d *DB) DeleteUserCascade(ctx context.Context, id primitive.ObjectID) error {
+	if _, err := d.conversations.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
+		return err
+	}
+	if _, err := d.goals.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
+		return err
+	}
+	if _, err := d.liveRuns.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
+		return err
+	}
+	res, err := d.users.DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SignupDay : inscriptions agrégées par jour (UTC).
+type SignupDay struct {
+	Day   string `json:"day"`
+	Count int64  `json:"count"`
+}
+
+// SignupsByDayUTC retourne les `days` derniers jours (y compris jours à 0 inscription).
+func (d *DB) SignupsByDayUTC(ctx context.Context, days int) ([]SignupDay, error) {
+	if days <= 0 || days > 90 {
+		days = 30
+	}
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -(days - 1))
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"created_at": bson.M{"$gte": start}}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": bson.M{"$dateToString": bson.M{"format": "%Y-%m-%d", "date": "$created_at", "timezone": "UTC"}},
+			"count": bson.M{"$sum": 1},
+		}}},
+		{{Key: "$sort", Value: bson.M{"_id": 1}}},
+	}
+	cur, err := d.users.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	byDay := map[string]int64{}
+	for cur.Next(ctx) {
+		var row struct {
+			ID    string `bson:"_id"`
+			Count int64  `bson:"count"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return nil, err
+		}
+		byDay[row.ID] = row.Count
+	}
+	if err := cur.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]SignupDay, 0, days)
+	for i := 0; i < days; i++ {
+		dt := start.AddDate(0, 0, i)
+		day := dt.Format("2006-01-02")
+		out = append(out, SignupDay{Day: day, Count: byDay[day]})
+	}
+	return out, nil
+}
+
+// TopUserActivity : score = courses live + objectifs + conversations (approx. « activité »).
+type TopUserActivity struct {
+	UserID       string `json:"user_id"`
+	Email        string `json:"email"`
+	Activity     int64  `json:"activity"`
+	LiveRuns     int64  `json:"live_runs"`
+	Goals        int64  `json:"goals"`
+	Conversations int64  `json:"conversations"`
+}
+
+func aggregateUserCounts(ctx context.Context, coll *mongo.Collection) (map[primitive.ObjectID]int64, error) {
+	cur, err := coll.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{"_id": "$user_id", "c": bson.M{"$sum": 1}}}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	out := map[primitive.ObjectID]int64{}
+	for cur.Next(ctx) {
+		var row struct {
+			ID primitive.ObjectID `bson:"_id"`
+			C  int64              `bson:"c"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return nil, err
+		}
+		out[row.ID] = row.C
+	}
+	return out, cur.Err()
+}
+
+// TopUsersByActivity classe les utilisateurs par (live_runs + goals + conversations).
+func (d *DB) TopUsersByActivity(ctx context.Context, limit int) ([]TopUserActivity, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	lr, err := aggregateUserCounts(ctx, d.liveRuns)
+	if err != nil {
+		return nil, err
+	}
+	gc, err := aggregateUserCounts(ctx, d.goals)
+	if err != nil {
+		return nil, err
+	}
+	cc, err := aggregateUserCounts(ctx, d.conversations)
+	if err != nil {
+		return nil, err
+	}
+	score := map[primitive.ObjectID]int64{}
+	add := func(m map[primitive.ObjectID]int64) {
+		for id, n := range m {
+			score[id] += n
+		}
+	}
+	add(lr)
+	add(gc)
+	add(cc)
+	type pair struct {
+		id    primitive.ObjectID
+		score int64
+	}
+	var pairs []pair
+	for id, s := range score {
+		pairs = append(pairs, pair{id: id, score: s})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].score != pairs[j].score {
+			return pairs[i].score > pairs[j].score
+		}
+		return pairs[i].id.Hex() < pairs[j].id.Hex()
+	})
+	if len(pairs) > limit {
+		pairs = pairs[:limit]
+	}
+	if len(pairs) == 0 {
+		return []TopUserActivity{}, nil
+	}
+	ids := make([]primitive.ObjectID, len(pairs))
+	for i := range pairs {
+		ids[i] = pairs[i].id
+	}
+	cur, err := d.users.Find(ctx, bson.M{"_id": bson.M{"$in": ids}}, options.Find().SetProjection(bson.M{"email": 1}))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	emailOf := map[primitive.ObjectID]string{}
+	for cur.Next(ctx) {
+		var u struct {
+			ID    primitive.ObjectID `bson:"_id"`
+			Email string             `bson:"email"`
+		}
+		if err := cur.Decode(&u); err != nil {
+			return nil, err
+		}
+		emailOf[u.ID] = u.Email
+	}
+	if err := cur.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]TopUserActivity, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, TopUserActivity{
+			UserID:        p.id.Hex(),
+			Email:         emailOf[p.id],
+			Activity:      p.score,
+			LiveRuns:      lr[p.id],
+			Goals:         gc[p.id],
+			Conversations: cc[p.id],
+		})
+	}
+	return out, nil
 }
 
 func (d *DB) ListGoalsSummariesByUser(ctx context.Context, userID primitive.ObjectID, limit int) ([]bson.M, error) {

@@ -978,6 +978,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		ar.Get("/users", h.AdminListUsers)
 		ar.Get("/users/{id}", h.AdminGetUser)
 		ar.Patch("/users/{id}", h.AdminPatchUser)
+		ar.Delete("/users/{id}", h.AdminDeleteUser)
 		ar.Get("/promo-codes", h.AdminListPromos)
 		ar.Post("/promo-codes", h.AdminCreatePromo)
 		ar.Patch("/promo-codes/{id}", h.AdminPatchPromo)
