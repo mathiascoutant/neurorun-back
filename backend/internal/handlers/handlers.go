@@ -362,6 +362,26 @@ func (h *Handlers) GetConversation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, conv)
 }
 
+func (h *Handlers) DeleteConversation(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	idHex := chi.URLParam(r, "id")
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
+		return
+	}
+	err = h.db.DeleteConversationByUser(r.Context(), u.ID, oid)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "suppression impossible"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
 
@@ -864,6 +884,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/conversations", h.CreateConversation)
 		pr.Get("/conversations", h.ListConversations)
 		pr.Get("/conversations/{id}", h.GetConversation)
+		pr.Delete("/conversations/{id}", h.DeleteConversation)
 		pr.Post("/goals/feasibility", h.GoalFeasibility)
 		pr.Post("/goals", h.CreateGoal)
 		pr.Get("/goals", h.ListGoals)

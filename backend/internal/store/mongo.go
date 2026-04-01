@@ -200,6 +200,17 @@ func (d *DB) GetConversationByUser(ctx context.Context, userID, convID primitive
 	return &c, nil
 }
 
+func (d *DB) DeleteConversationByUser(ctx context.Context, userID, convID primitive.ObjectID) error {
+	res, err := d.conversations.DeleteOne(ctx, bson.M{"_id": convID, "user_id": userID})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (d *DB) AppendConversationTurns(ctx context.Context, userID, convID primitive.ObjectID, userText, assistantText string, newTitle *string) error {
 	now := time.Now().UTC()
 	turns := []models.ChatTurn{
