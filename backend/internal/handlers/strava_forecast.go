@@ -122,6 +122,9 @@ func (h *Handlers) StravaRaceForecast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "forecast") {
+		return
+	}
 	if !u.HasStrava() {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
 		return
@@ -146,6 +149,9 @@ func (h *Handlers) StravaRaceForecastAdjust(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "forecast") {
+		return
+	}
 	if !u.HasStrava() {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
 		return

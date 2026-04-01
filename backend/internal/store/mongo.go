@@ -30,6 +30,8 @@ type DB struct {
 	conversations   *mongo.Collection
 	goals           *mongo.Collection
 	liveRuns        *mongo.Collection
+	settings        *mongo.Collection
+	promoCodes      *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -76,6 +78,8 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	conversations := database.Collection("conversations")
 	goals := database.Collection("goals")
 	liveRuns := database.Collection("live_runs")
+	settings := database.Collection("settings")
+	promoCodes := database.Collection("promo_codes")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -89,6 +93,10 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	_, _ = liveRuns.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
 	})
+	_, _ = promoCodes.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "code", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
 	return &DB{
 		client:        client,
 		database:      database,
@@ -96,6 +104,8 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		conversations: conversations,
 		goals:         goals,
 		liveRuns:      liveRuns,
+		settings:      settings,
+		promoCodes:    promoCodes,
 	}, nil
 }
 
@@ -109,6 +119,8 @@ func (d *DB) CreateUser(ctx context.Context, email, passwordHash string) (*model
 		ID:           primitive.NewObjectID(),
 		Email:        email,
 		PasswordHash: passwordHash,
+		Role:         models.RoleUser,
+		Plan:         models.PlanStandard,
 		CreatedAt:    now,
 	}
 	_, err := d.users.InsertOne(ctx, u)

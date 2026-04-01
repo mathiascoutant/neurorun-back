@@ -23,6 +23,8 @@ type Config struct {
 	CORSAllowed        []string
 	OpenAIAPIKey       string
 	OpenAIModel        string
+	// AdminEmail : à l’inscription, ce compte reçoit le rôle admin (comparaison insensible à la casse).
+	AdminEmail string
 }
 
 func Load() (*Config, error) {
@@ -46,6 +48,7 @@ func Load() (*Config, error) {
 		FrontendURL:        frontend,
 		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:        getenv("OPENAI_MODEL", "gpt-4o"),
+		AdminEmail:         strings.TrimSpace(strings.ToLower(os.Getenv("ADMIN_EMAIL"))),
 	}
 	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
 		for _, o := range strings.Split(raw, ",") {

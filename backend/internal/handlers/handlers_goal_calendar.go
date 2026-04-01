@@ -16,6 +16,9 @@ import (
 
 func (h *Handlers) GoalCalendar(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "circuit") {
+		return
+	}
 
 	idHex := chi.URLParam(r, "id")
 	gid, err := primitive.ObjectIDFromHex(idHex)

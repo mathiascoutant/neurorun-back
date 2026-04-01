@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -27,6 +28,10 @@ type Handlers struct {
 	db     *store.DB
 	strava *strava.Client
 	openai *oai.Client
+
+	offerMu     sync.RWMutex
+	offerCache  *models.OfferConfig
+	offerExpiry time.Time
 }
 
 func New(cfg *config.Config, db *store.DB) *Handlers {
@@ -71,15 +76,22 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.cfg.AdminEmail != "" && strings.EqualFold(u.Email, h.cfg.AdminEmail) {
+		if err := h.db.UpdateUserRolePlan(r.Context(), u.ID, stringPtr(models.RoleAdmin), nil); err == nil {
+			u.Role = models.RoleAdmin
+		}
+	}
+
 	token, err := auth.SignJWT(u.ID.Hex(), h.cfg.JWTSecret, 7*24*time.Hour)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token"})
 		return
 	}
 
+	caps, _ := h.capabilitiesForUser(r.Context(), u)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"token": token,
-		"user":  userPublic(u),
+		"user":  userPublic(u, caps),
 	})
 }
 
@@ -111,28 +123,55 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	caps, capErr := h.capabilitiesForUser(r.Context(), u)
+	if capErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
-		"user":  userPublic(u),
+		"user":  userPublic(u, caps),
 	})
 }
 
-func userPublic(u *models.User) map[string]any {
-	return map[string]any{
+func userPublic(u *models.User, capabilities map[string]bool) map[string]any {
+	m := map[string]any{
 		"id":            u.ID.Hex(),
 		"email":         u.Email,
 		"strava_linked": u.HasStrava(),
 		"created_at":    u.CreatedAt.Format(time.RFC3339),
+		"role":          u.EffectiveRole(),
+		"plan":          u.EffectivePlan(),
 	}
+	if capabilities != nil {
+		m["capabilities"] = capabilities
+	}
+	return m
 }
+
+func stringPtr(s string) *string { return &s }
 
 func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
-	writeJSON(w, http.StatusOK, userPublic(u))
+	caps, err := h.capabilitiesForUser(r.Context(), u)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
+		return
+	}
+	writeJSON(w, http.StatusOK, userPublic(u, caps))
 }
 
 func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	ok, err := h.userHasCapability(r.Context(), u, "strava_dashboard")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
+		return
+	}
+	if !ok {
+		writeFeatureForbidden(w, "Strava")
+		return
+	}
 	if !u.HasStrava() {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
 		return
@@ -188,6 +227,15 @@ func (h *Handlers) StravaAuthorizeURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	ok, err := h.userHasCapability(r.Context(), u, "strava_dashboard")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
+		return
+	}
+	if !ok {
+		writeFeatureForbidden(w, "Strava")
+		return
+	}
 	state, err := auth.SignStravaState(u.ID.Hex(), h.cfg.JWTSecret, 15*time.Minute)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state"})
@@ -219,6 +267,21 @@ func (h *Handlers) StravaCallback(w http.ResponseWriter, r *http.Request) {
 	oid, err := primitive.ObjectIDFromHex(userHex)
 	if err != nil {
 		http.Redirect(w, r, h.cfg.FrontendURL+"/link-strava?error=user", http.StatusFound)
+		return
+	}
+
+	u, err := h.db.FindUserByID(r.Context(), oid)
+	if err != nil {
+		http.Redirect(w, r, h.cfg.FrontendURL+"/link-strava?error=user", http.StatusFound)
+		return
+	}
+	ok, err := h.userHasCapability(r.Context(), u, "strava_dashboard")
+	if err != nil {
+		http.Redirect(w, r, h.cfg.FrontendURL+"/link-strava?error=config", http.StatusFound)
+		return
+	}
+	if !ok {
+		http.Redirect(w, r, h.cfg.FrontendURL+"/link-strava?error=forbidden", http.StatusFound)
 		return
 	}
 
@@ -324,6 +387,9 @@ func goalDistanceLabel(km float64) (string, float64, bool) {
 
 func (h *Handlers) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "coach_chat") {
+		return
+	}
 	conv, err := h.db.CreateConversation(r.Context(), u.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "impossible de créer la conversation"})
@@ -334,6 +400,9 @@ func (h *Handlers) CreateConversation(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) ListConversations(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "coach_chat") {
+		return
+	}
 	list, err := h.db.ListConversationsByUser(r.Context(), u.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste impossible"})
@@ -344,6 +413,9 @@ func (h *Handlers) ListConversations(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) GetConversation(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "coach_chat") {
+		return
+	}
 	idHex := chi.URLParam(r, "id")
 	oid, err := primitive.ObjectIDFromHex(idHex)
 	if err != nil {
@@ -364,6 +436,9 @@ func (h *Handlers) GetConversation(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) DeleteConversation(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "coach_chat") {
+		return
+	}
 	idHex := chi.URLParam(r, "id")
 	oid, err := primitive.ObjectIDFromHex(idHex)
 	if err != nil {
@@ -384,6 +459,9 @@ func (h *Handlers) DeleteConversation(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "coach_chat") {
+		return
+	}
 
 	var b chatBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
@@ -491,6 +569,9 @@ func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) ListGoals(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "goals") {
+		return
+	}
 	list, err := h.db.ListGoalsByUser(r.Context(), u.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste objectifs"})
@@ -501,6 +582,9 @@ func (h *Handlers) ListGoals(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) GetGoal(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "goals") {
+		return
+	}
 	idHex := chi.URLParam(r, "id")
 	oid, err := primitive.ObjectIDFromHex(idHex)
 	if err != nil {
@@ -521,6 +605,9 @@ func (h *Handlers) GetGoal(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) DeleteGoal(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "goals") {
+		return
+	}
 	idHex := chi.URLParam(r, "id")
 	oid, err := primitive.ObjectIDFromHex(idHex)
 	if err != nil {
@@ -540,6 +627,9 @@ func (h *Handlers) DeleteGoal(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "goals") {
+		return
+	}
 
 	b, label, _, targetTime, errHTTP, errMsg := validateGoalPayload(r)
 	if errHTTP != 0 {
@@ -623,6 +713,9 @@ Une phrase simple qui résume pourquoi.
 
 func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "goals") {
+		return
+	}
 
 	b, label, distKm, targetTime, errHTTP, errMsg := validateGoalPayload(r)
 	if errHTTP != 0 {
@@ -690,6 +783,9 @@ type goalChatBody struct {
 
 func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "goals") {
+		return
+	}
 
 	idHex := chi.URLParam(r, "id")
 	gid, err := primitive.ObjectIDFromHex(idHex)
@@ -873,9 +969,27 @@ func (h *Handlers) Mount(r chi.Router) {
 	r.Post("/auth/register", h.Register)
 	r.Post("/auth/login", h.Login)
 	r.Get("/strava/callback", h.StravaCallback)
+	r.Get("/public/offer-config", h.PublicOfferConfig)
+
+	r.Route("/admin", func(ar chi.Router) {
+		ar.Use(h.AuthMiddleware)
+		ar.Use(h.AdminMiddleware)
+		ar.Get("/stats", h.AdminStats)
+		ar.Get("/users", h.AdminListUsers)
+		ar.Get("/users/{id}", h.AdminGetUser)
+		ar.Patch("/users/{id}", h.AdminPatchUser)
+		ar.Get("/promo-codes", h.AdminListPromos)
+		ar.Post("/promo-codes", h.AdminCreatePromo)
+		ar.Patch("/promo-codes/{id}", h.AdminPatchPromo)
+		ar.Delete("/promo-codes/{id}", h.AdminDeletePromo)
+		ar.Get("/offer-config", h.AdminGetOfferConfig)
+		ar.Put("/offer-config", h.AdminPutOfferConfig)
+	})
 
 	r.Group(func(pr chi.Router) {
 		pr.Use(h.AuthMiddleware)
+		pr.Post("/checkout/preview", h.CheckoutPreview)
+		pr.Post("/checkout/subscribe", h.CheckoutSubscribe)
 		pr.Get("/me", h.Me)
 		pr.Get("/strava/dashboard", h.StravaDashboard)
 		pr.Get("/strava/forecast", h.StravaRaceForecast)

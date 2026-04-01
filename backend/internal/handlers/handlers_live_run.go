@@ -43,6 +43,9 @@ type liveRunCreateBody struct {
 
 func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "live_runs") {
+		return
+	}
 	var b liveRunCreateBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json invalide"})
@@ -104,6 +107,9 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) ListLiveRuns(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "live_runs") {
+		return
+	}
 	list, err := h.db.ListLiveRunsByUser(r.Context(), u.ID, 80)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste impossible"})
@@ -127,6 +133,9 @@ func (h *Handlers) ListLiveRuns(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) GetLiveRun(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "live_runs") {
+		return
+	}
 	idStr := chi.URLParam(r, "id")
 	oid, err := primitive.ObjectIDFromHex(idStr)
 	if err != nil {
