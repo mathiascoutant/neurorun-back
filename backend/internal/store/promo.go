@@ -48,6 +48,9 @@ func (d *DB) ListPromoCodes(ctx context.Context) ([]models.PromoCode, error) {
 		}
 		out = append(out, p)
 	}
+	if out == nil {
+		out = []models.PromoCode{}
+	}
 	return out, cur.Err()
 }
 

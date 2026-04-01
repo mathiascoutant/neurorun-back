@@ -63,6 +63,9 @@ func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, 
 			CreatedAt:    raw.CreatedAt,
 		})
 	}
+	if out == nil {
+		out = []UserListItem{}
+	}
 	return out, cur.Err()
 }
 
