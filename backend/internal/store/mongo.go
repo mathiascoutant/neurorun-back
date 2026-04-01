@@ -270,13 +270,14 @@ func (d *DB) DeleteGoalByUser(ctx context.Context, userID, goalID primitive.Obje
 
 // UpdateGoalTrainingFields remplace le plan Markdown, les séances extraites et les paramètres liés.
 // customOffsets : longueur doit égaler spw et valeurs 0–6 (lun–dim) ; sinon passer nil pour le motif par défaut.
-func (d *DB) UpdateGoalTrainingFields(ctx context.Context, userID, goalID primitive.ObjectID, plan string, planned []models.PlannedSession, weeks, spw int, target string, customOffsets []int) error {
+func (d *DB) UpdateGoalTrainingFields(ctx context.Context, userID, goalID primitive.ObjectID, plan string, planned []models.PlannedSession, weeks, spw int, target string, customOffsets []int, planWithoutStravaData bool) error {
 	set := bson.M{
-		"plan":               plan,
-		"planned_sessions":   planned,
-		"sessions_per_week":  spw,
-		"weeks":              weeks,
-		"target_time":        target,
+		"plan":                     plan,
+		"planned_sessions":         planned,
+		"sessions_per_week":        spw,
+		"weeks":                    weeks,
+		"target_time":              target,
+		"plan_without_strava_data": planWithoutStravaData,
 	}
 	update := bson.M{"$set": set}
 	useCustom := false

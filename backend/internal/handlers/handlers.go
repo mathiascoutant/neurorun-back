@@ -364,10 +364,6 @@ func (h *Handlers) GetConversation(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
-	if !u.HasStrava() {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
-		return
-	}
 
 	var b chatBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
@@ -409,25 +405,33 @@ func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 		convID = oid
 	}
 
-	access, err := h.ensureStravaAccess(r.Context(), u)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-		return
+	var system string
+	if u.HasStrava() {
+		access, err := h.ensureStravaAccess(r.Context(), u)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			return
+		}
+		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 25)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			return
+		}
+		actsJSON, _ := json.Marshal(acts)
+		system = `Tu es un coach course à pied / vélo (Strava). Tu lis le JSON des activités et réponds en français, ton direct et sympa. ` +
+			`Unités : km, minutes, allure en min/km, FC en bpm, dénivelé en m. Jamais de gros pavés : ` +
+			`2 à 5 puces courtes OU au plus 3 petits paragraphes de une phrase chacun. ` +
+			`Va droit au fait : chiffres clés, lecture en une ligne, puis 1 seul conseil si utile. Pas de listes numérotées longues ni de répétitions. ` +
+			`Si une info manque, une seule phrase. ` +
+			`Activités récentes (JSON): ` + string(actsJSON)
+	} else {
+		system = `Tu es un coach course à pied et vélo. Tu réponds en français, ton direct et sympa. ` +
+			`Tu n’as pas accès à l’historique Strava de la personne : appuie-toi sur les bonnes pratiques, la progression prudente et des questions courtes si un détail manque. ` +
+			`Unités : km, minutes, allure en min/km, FC en bpm, dénivelé en m. Jamais de gros pavés : ` +
+			`2 à 5 puces courtes OU au plus 3 petits paragraphes d’une phrase. ` +
+			`Va droit au fait. Si une info manque, une seule phrase. ` +
+			`Tu peux inviter à associer Strava dans l’app pour des repères basés sur les vraies sorties, sans insister.`
 	}
-
-	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 25)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-		return
-	}
-	actsJSON, _ := json.Marshal(acts)
-
-	system := `Tu es un coach course à pied / vélo (Strava). Tu lis le JSON des activités et réponds en français, ton direct et sympa. ` +
-		`Unités : km, minutes, allure en min/km, FC en bpm, dénivelé en m. Jamais de gros pavés : ` +
-		`2 à 5 puces courtes OU au plus 3 petits paragraphes de une phrase chacun. ` +
-		`Va droit au fait : chiffres clés, lecture en une ligne, puis 1 seul conseil si utile. Pas de listes numérotées longues ni de répétitions. ` +
-		`Si une info manque, une seule phrase. ` +
-		`Activités récentes (JSON): ` + string(actsJSON)
 
 	msgs := []oai.ChatMessage{{Role: "system", Content: system}}
 	hist := conv.Messages
@@ -516,10 +520,6 @@ func (h *Handlers) DeleteGoal(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
-	if !u.HasStrava() {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
-		return
-	}
 
 	b, label, _, targetTime, errHTTP, errMsg := validateGoalPayload(r)
 	if errHTTP != 0 {
@@ -527,20 +527,26 @@ func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := h.ensureStravaAccess(r.Context(), u)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-		return
-	}
+	userQ := `Objectif course : ` + label + `.
+Chrono ou intention : ` + targetTime + `.
+Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
+Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
+Donne uniquement le verdict et la justification demandés.`
 
-	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-		return
-	}
-	actsJSON, _ := json.Marshal(acts)
-
-	system := `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT, phrases courtes (une idée par phrase). Niveau débutant : évite le jargon ou explique en une parenthèse (ex. « allure = minutes pour faire 1 km »).
+	var system string
+	if u.HasStrava() {
+		access, err := h.ensureStravaAccess(r.Context(), u)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			return
+		}
+		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			return
+		}
+		actsJSON, _ := json.Marshal(acts)
+		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT, phrases courtes (une idée par phrase). Niveau débutant : évite le jargon ou explique en une parenthèse (ex. « allure = minutes pour faire 1 km »).
 
 Tu reçois des activités Strava en JSON + un objectif (distance, chrono visé, semaines avant la course, séances/semaine).
 
@@ -564,12 +570,28 @@ Une phrase simple qui résume pourquoi.
 Ne invente pas de chiffres absents du JSON.
 
 **Activités (JSON) :** ` + string(actsJSON)
+	} else {
+		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT, phrases courtes. Niveau débutant : évite le jargon ou explique en une parenthèse (ex. « allure = minutes pour faire 1 km »).
 
-	userQ := `Objectif course : ` + label + `.
-Chrono ou intention : ` + targetTime + `.
-Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
-Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
-Donne uniquement le verdict et la justification demandés.`
+Tu n’as **pas** d’historique d’activités : tu te bases **uniquement** sur l’objectif déclaré (distance, chrono ou intention, délai, séances par semaine). Reste prudent : repères généraux, pas de stats inventées. Une phrase peut inviter à lier Strava plus tard pour affiner avec de vraies sorties.
+
+Ton ton est bienveillant et **inclusif**.
+
+Réponds UNIQUEMENT avec ce format Markdown (rien d'autre — pas de plan d'entraînement ) :
+
+## Verdict
+Une seule ligne parmi :
+**Réaliste** ou **Ambitieux mais jouable** ou **Très tendu / peu réaliste**
+
+## En une phrase
+Une phrase simple qui résume pourquoi.
+
+## Pourquoi (sans historique importé)
+3 à 5 puces : raisonne sur le délai, le volume hebdomadaire plausible et l’ambition du chrono par rapport à une progression typique — sans prétendre connaître l’entraînement réel de la personne.
+
+## Conseil si tu veux progresser
+2 ou 3 puces : ajuster le chrono, le délai ou le nombre de séances ; mentionner que lier Strava permet un avis plus précis.`
+	}
 
 	text, err := h.openai.Chat(r.Context(), system, userQ)
 	if err != nil {
@@ -581,10 +603,6 @@ Donne uniquement le verdict et la justification demandés.`
 
 func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
-	if !u.HasStrava() {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
-		return
-	}
 
 	b, label, distKm, targetTime, errHTTP, errMsg := validateGoalPayload(r)
 	if errHTTP != 0 {
@@ -592,20 +610,25 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := h.ensureStravaAccess(r.Context(), u)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-		return
+	hasStravaData := u.HasStrava()
+	var actsJSON []byte
+	if hasStravaData {
+		access, err := h.ensureStravaAccess(r.Context(), u)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			return
+		}
+		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			return
+		}
+		actsJSON, _ = json.Marshal(acts)
+	} else {
+		actsJSON = []byte("[]")
 	}
 
-	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-		return
-	}
-	actsJSON, _ := json.Marshal(acts)
-
-	plan, planned, err := h.synthesizeTrainingPlan(r.Context(), actsJSON, label, targetTime, b.Weeks, b.SessionsPerWeek)
+	plan, planned, err := h.synthesizeTrainingPlan(r.Context(), actsJSON, label, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
@@ -621,15 +644,16 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	g := &models.Goal{
-		UserID:          u.ID,
-		DistanceKm:      distKm,
-		DistanceLabel:   label,
-		Weeks:           b.Weeks,
-		SessionsPerWeek: b.SessionsPerWeek,
-		TargetTime:      targetTime,
-		Plan:            plan,
-		PlannedSessions: planned,
-		CoachThread:     []models.ChatTurn{welcome},
+		UserID:                u.ID,
+		DistanceKm:            distKm,
+		DistanceLabel:         label,
+		Weeks:                 b.Weeks,
+		SessionsPerWeek:       b.SessionsPerWeek,
+		TargetTime:            targetTime,
+		Plan:                  plan,
+		PlannedSessions:       planned,
+		CoachThread:           []models.ChatTurn{welcome},
+		PlanWithoutStravaData: !hasStravaData,
 	}
 	if err := h.db.CreateGoal(r.Context(), g); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde objectif"})
@@ -646,10 +670,6 @@ type goalChatBody struct {
 
 func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
-	if !u.HasStrava() {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
-		return
-	}
 
 	idHex := chi.URLParam(r, "id")
 	gid, err := primitive.ObjectIDFromHex(idHex)
@@ -679,17 +699,23 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := h.ensureStravaAccess(r.Context(), u)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-		return
+	hasStravaData := u.HasStrava()
+	var actsJSON []byte
+	if hasStravaData {
+		access, err := h.ensureStravaAccess(r.Context(), u)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			return
+		}
+		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			return
+		}
+		actsJSON, _ = json.Marshal(acts)
+	} else {
+		actsJSON = []byte("[]")
 	}
-	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-		return
-	}
-	actsJSON, _ := json.Marshal(acts)
 
 	aiIntent := h.extractGoalAdjustIntent(r.Context(), b.Message, g)
 	mergedIntent := mergeGoalAdjustIntent(aiIntent, heuristicGoalAdjust(b.Message, g))
@@ -702,9 +728,9 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 		mergedIntent.Replan = true
 	}
 	if needsPersistedReplan(g, mergedIntent, spw, weeks, target, calOff) && strings.TrimSpace(h.cfg.OpenAIAPIKey) != "" {
-		plan, planned, genErr := h.synthesizeTrainingPlan(r.Context(), actsJSON, g.DistanceLabel, target, weeks, spw)
+		plan, planned, genErr := h.synthesizeTrainingPlan(r.Context(), actsJSON, g.DistanceLabel, target, weeks, spw, hasStravaData)
 		if genErr == nil {
-			upErr := h.db.UpdateGoalTrainingFields(r.Context(), u.ID, gid, plan, planned, weeks, spw, target, calOff)
+			upErr := h.db.UpdateGoalTrainingFields(r.Context(), u.ID, gid, plan, planned, weeks, spw, target, calOff, !hasStravaData)
 			if upErr == nil {
 				refreshed, refErr := h.db.GetGoalByUser(r.Context(), u.ID, gid)
 				if refErr == nil {
@@ -718,6 +744,11 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 	const planMax = 3200
 	if len(planCtx) > planMax {
 		planCtx = planCtx[:planMax] + "\n… (suite du plan omise pour le contexte)"
+	}
+
+	activitiesBlock := "**Activités récentes (JSON)**\n" + string(actsJSON)
+	if !hasStravaData {
+		activitiesBlock = "**Historique Strava** : non importé — base tes réponses sur l’objectif et le plan ci-dessus. Tu peux mentionner qu’associer Strava permet d’aligner les conseils sur le volume et l’allure réels, sans insister."
 	}
 
 	system := `Tu es un·e coach course à pied bienveillant·e. Tu écris en français.
@@ -746,8 +777,7 @@ Tu discutes de L'OBJECTIF enregistré (distance, chrono, semaines, séances/sema
 **Plan (référence)**
 ` + planCtx + `
 
-**Activités récentes (JSON)**
-` + string(actsJSON)
+` + activitiesBlock
 
 	msgs := []oai.ChatMessage{{Role: "system", Content: system}}
 	hist := g.CoachThread

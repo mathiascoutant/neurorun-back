@@ -28,5 +28,7 @@ type Goal struct {
 	// CalendarDayOffsets : jours 0=lundi…6=dimanche ; si absent ou longueur ≠ sessions_per_week, on utilise le motif par défaut.
 	CalendarDayOffsets []int `bson:"calendar_day_offsets,omitempty" json:"calendar_day_offsets,omitempty"`
 	CoachThread      []ChatTurn         `bson:"coach_thread,omitempty" json:"coach_thread,omitempty"`
+	// PlanWithoutStravaData : plan généré sans JSON d’activités (objectif seul) ; repasse à false après régénération avec Strava.
+	PlanWithoutStravaData bool `bson:"plan_without_strava_data,omitempty" json:"plan_without_strava_data,omitempty"`
 	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`
 }

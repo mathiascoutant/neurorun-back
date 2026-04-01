@@ -8,6 +8,7 @@ import (
 	"runapp/internal/goalcalendar"
 	"runapp/internal/models"
 	"runapp/internal/store"
+	"runapp/internal/strava"
 
 	"github.com/go-chi/chi/v5"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -15,10 +16,6 @@ import (
 
 func (h *Handlers) GoalCalendar(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
-	if !u.HasStrava() {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
-		return
-	}
 
 	idHex := chi.URLParam(r, "id")
 	gid, err := primitive.ObjectIDFromHex(idHex)
@@ -37,17 +34,19 @@ func (h *Handlers) GoalCalendar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := h.ensureStravaAccess(r.Context(), u)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-		return
-	}
-
-	after := g.CreatedAt.Unix() - 7200
-	runs, err := h.strava.FetchRunActivities(r.Context(), access, &after)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-		return
+	var runs []strava.RunActivity
+	if u.HasStrava() {
+		access, err := h.ensureStravaAccess(r.Context(), u)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			return
+		}
+		after := g.CreatedAt.Unix() - 7200
+		runs, err = h.strava.FetchRunActivities(r.Context(), access, &after)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			return
+		}
 	}
 
 	loc, err := time.LoadLocation("Europe/Paris")

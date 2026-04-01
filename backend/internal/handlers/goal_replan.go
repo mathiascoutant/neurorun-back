@@ -28,11 +28,13 @@ var (
 	reThreeSessions = regexp.MustCompile(`(?i)\b(3|trois)\s*s[ée]ances?\b`)
 )
 
-func (h *Handlers) synthesizeTrainingPlan(ctx context.Context, actsJSON []byte, label, targetTime string, weeks, spw int) (string, []models.PlannedSession, error) {
+func (h *Handlers) synthesizeTrainingPlan(ctx context.Context, actsJSON []byte, label, targetTime string, weeks, spw int, hasStravaData bool) (string, []models.PlannedSession, error) {
 	if weeks < 1 || spw < 1 || weeks > 52 || spw > 7 {
 		return "", nil, errors.New("bad weeks/spw")
 	}
-	system := `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces, peu de blocs denses. Niveau accessible : une seule fois, rappelle que min/km = minutes pour parcourir 1 km.
+	var system string
+	if hasStravaData {
+		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces, peu de blocs denses. Niveau accessible : une seule fois, rappelle que min/km = minutes pour parcourir 1 km.
 
 Tu reçois des activités Strava en JSON + un objectif (distance, chrono, semaines restantes, séances/semaine).
 
@@ -68,6 +70,43 @@ Pour **chaque** séance (Séance 1, 2, …) une **seule puce** ou une **liste co
 Pas de paragraphes de plus de 3 phrases d'affilée. Pas de listes numérotées longues.
 
 **Activités (JSON) :** ` + string(actsJSON)
+	} else {
+		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces. Niveau accessible : une fois, rappelle que min/km = minutes pour parcourir 1 km.
+
+**Contexte** : tu n’as **pas** d’historique d’activités importé (pas de JSON). Tu construis le plan **uniquement** à partir de l’objectif déclaré (distance, chrono ou intention, délai, séances/semaine). Reste **prudent** : repères génériques, pas de chiffres inventés comme s’ils venaient de sorties réelles. Indique une fois qu’associer Strava permettra d’affiner avec le volume et l’allure réels.
+
+**Impératif chiffres** : le plan doit être **exécutable**. Allures en min/km, temps par répétition si fractionné. Si le chrono est chiffré, calcule l’**allure course cible** (minutes totales ÷ km) et déduis facile / seuil / fractions de façon cohérente.
+
+Rédige un plan en Markdown avec EXACTEMENT ces sections (titres ##), dans l’ordre :
+
+## Rappel faisabilité
+2 phrases : sans historique, tu raisonnes sur l’objectif déclaré et tu restes honnête sur l’incertitude.
+
+## Où tu pars (sans historique importé)
+3 à 5 puces : expliquer qu’on part de l’intention déclarée ; inviter à noter ressenti et allure ressentie sur les prochaines sorties ; mentionner qu’une liaison Strava aidera à calibrer.
+
+## Les 3 idées à retenir
+Exactement 3 puces courtes.
+
+## Repères d'allure pour cette prépa
+5 à 8 puces **avec chiffres** (min/km, temps par répétition) dérivés **de l’objectif**, pas d’un historique fictif.
+
+## Calendrier — semaine par semaine
+### Semaine 1, ### Semaine 2, etc. Pour chaque séance : échauffement (durée/km + allure), corps, retour au calme — comme pour le mode Strava.
+
+## Dans les derniers jours avant la course
+2 à 4 puces.
+
+## Sécurité
+2 puces.
+
+## Échanges avec le coach
+2 puces : fil sous l’objectif ; lier Strava optionnel pour affiner.
+
+Pas de paragraphes trop longs.
+
+**Note** : pas de données d’activités JSON — n’invente pas de stats personnelles.`
+	}
 
 	userQ := fmt.Sprintf(`Objectif course : %s.
 Chrono ou intention : %s.
