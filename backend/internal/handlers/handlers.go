@@ -116,6 +116,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "identifiants invalides"})
 		return
 	}
+	_ = h.db.SetUserLastSeenNow(r.Context(), u.ID)
 
 	token, err := auth.SignJWT(u.ID.Hex(), h.cfg.JWTSecret, 7*24*time.Hour)
 	if err != nil {
@@ -954,6 +955,7 @@ func (h *Handlers) AuthMiddleware(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur serveur"})
 			return
 		}
+		_ = h.db.TouchUserLastSeenIfStale(r.Context(), u.ID, 3*time.Minute)
 		ctx := context.WithValue(r.Context(), ctxUser{}, u)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

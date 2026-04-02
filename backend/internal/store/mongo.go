@@ -122,6 +122,7 @@ func (d *DB) CreateUser(ctx context.Context, email, passwordHash string) (*model
 		Role:         models.RoleUser,
 		Plan:         models.PlanStandard,
 		CreatedAt:    now,
+		LastSeenAt:   &now,
 	}
 	_, err := d.users.InsertOne(ctx, u)
 	if err != nil {
@@ -155,6 +156,37 @@ func (d *DB) FindUserByID(ctx context.Context, id primitive.ObjectID) (*models.U
 		return nil, err
 	}
 	return &u, nil
+}
+
+// SetUserLastSeenNow enregistre l’instant présent comme dernière activité (ex. login).
+func (d *DB) SetUserLastSeenNow(ctx context.Context, userID primitive.ObjectID) error {
+	now := time.Now().UTC()
+	_, err := d.users.UpdateOne(ctx,
+		bson.M{"_id": userID},
+		bson.M{"$set": bson.M{"last_seen_at": now}},
+	)
+	return err
+}
+
+// TouchUserLastSeenIfStale met à jour last_seen_at seulement si absent ou plus vieux que staleAfter
+// (limite les écritures Mongo sur chaque requête authentifiée).
+func (d *DB) TouchUserLastSeenIfStale(ctx context.Context, userID primitive.ObjectID, staleAfter time.Duration) error {
+	if staleAfter <= 0 {
+		staleAfter = 3 * time.Minute
+	}
+	now := time.Now().UTC()
+	cutoff := now.Add(-staleAfter)
+	_, err := d.users.UpdateOne(ctx,
+		bson.M{
+			"_id": userID,
+			"$or": []bson.M{
+				{"last_seen_at": bson.M{"$exists": false}},
+				{"last_seen_at": bson.M{"$lt": cutoff}},
+			},
+		},
+		bson.M{"$set": bson.M{"last_seen_at": now}},
+	)
+	return err
 }
 
 func (d *DB) UpdateStravaTokens(ctx context.Context, userID primitive.ObjectID, t models.StravaTokens) error {

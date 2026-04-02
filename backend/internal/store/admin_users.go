@@ -14,12 +14,13 @@ import (
 )
 
 type UserListItem struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	Role         string    `json:"role"`
-	Plan         string    `json:"plan"`
-	StravaLinked bool      `json:"strava_linked"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string     `json:"id"`
+	Email        string     `json:"email"`
+	Role         string     `json:"role"`
+	Plan         string     `json:"plan"`
+	StravaLinked bool       `json:"strava_linked"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
 }
 
 func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, error) {
@@ -31,7 +32,7 @@ func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, 
 		SetSkip(skip).
 		SetLimit(limit).
 		SetProjection(bson.M{
-			"email": 1, "created_at": 1, "role": 1, "plan": 1,
+			"email": 1, "created_at": 1, "role": 1, "plan": 1, "last_seen_at": 1,
 			"strava.access_token": 1,
 		})
 	cur, err := d.users.Find(ctx, bson.M{}, opts)
@@ -42,12 +43,13 @@ func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, 
 	var out []UserListItem
 	for cur.Next(ctx) {
 		var raw struct {
-			ID        primitive.ObjectID `bson:"_id"`
-			Email     string             `bson:"email"`
-			Role      string             `bson:"role"`
-			Plan      string             `bson:"plan"`
-			CreatedAt time.Time          `bson:"created_at"`
-			Strava    *struct {
+			ID          primitive.ObjectID `bson:"_id"`
+			Email       string             `bson:"email"`
+			Role        string             `bson:"role"`
+			Plan        string             `bson:"plan"`
+			CreatedAt   time.Time          `bson:"created_at"`
+			LastSeenAt  *time.Time         `bson:"last_seen_at,omitempty"`
+			Strava      *struct {
 				AccessToken string `bson:"access_token"`
 			} `bson:"strava,omitempty"`
 		}
@@ -63,6 +65,7 @@ func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, 
 			Plan:         u.EffectivePlan(),
 			StravaLinked: linked,
 			CreatedAt:    raw.CreatedAt,
+			LastSeenAt:   raw.LastSeenAt,
 		})
 	}
 	if out == nil {

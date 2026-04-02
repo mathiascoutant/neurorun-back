@@ -29,6 +29,8 @@ type User struct {
 	Role         string             `bson:"role,omitempty" json:"role"`
 	Plan         string             `bson:"plan,omitempty" json:"plan"`
 	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
+	// LastSeenAt : dernière activité sur l’API (connexion ou requête authentifiée récente).
+	LastSeenAt *time.Time `bson:"last_seen_at,omitempty" json:"last_seen_at,omitempty"`
 }
 
 func (u *User) EffectiveRole() string {
