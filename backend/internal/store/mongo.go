@@ -24,14 +24,14 @@ func mongoURIUsesTLS(uri string) bool {
 }
 
 type DB struct {
-	client          *mongo.Client
-	database        *mongo.Database
-	users           *mongo.Collection
-	conversations   *mongo.Collection
-	goals           *mongo.Collection
-	liveRuns        *mongo.Collection
-	settings        *mongo.Collection
-	promoCodes      *mongo.Collection
+	client        *mongo.Client
+	database      *mongo.Database
+	users         *mongo.Collection
+	conversations *mongo.Collection
+	goals         *mongo.Collection
+	liveRuns      *mongo.Collection
+	settings      *mongo.Collection
+	promoCodes    *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -113,12 +113,26 @@ func (d *DB) Close(ctx context.Context) error {
 	return d.client.Disconnect(ctx)
 }
 
-func (d *DB) CreateUser(ctx context.Context, email, passwordHash string) (*models.User, error) {
+// CreateUserInput : champs profil à l’inscription (prénom, nom, date, genre requis côté handler).
+type CreateUserInput struct {
+	Email        string
+	PasswordHash string
+	FirstName    string
+	LastName     string
+	BirthDate    string // YYYY-MM-DD
+	Gender       string
+}
+
+func (d *DB) CreateUser(ctx context.Context, in CreateUserInput) (*models.User, error) {
 	now := time.Now().UTC()
 	u := models.User{
 		ID:           primitive.NewObjectID(),
-		Email:        email,
-		PasswordHash: passwordHash,
+		Email:        in.Email,
+		PasswordHash: in.PasswordHash,
+		FirstName:    in.FirstName,
+		LastName:     in.LastName,
+		BirthDate:    in.BirthDate,
+		Gender:       in.Gender,
 		Role:         models.RoleUser,
 		Plan:         models.PlanStandard,
 		CreatedAt:    now,
@@ -412,6 +426,34 @@ func (d *DB) GetLiveRunByUser(ctx context.Context, userID, runID primitive.Objec
 		return nil, err
 	}
 	return &lr, nil
+}
+
+// UpdateUserProfile met à jour prénom, nom, date de naissance, genre (email inchangé).
+func (d *DB) UpdateUserProfile(ctx context.Context, id primitive.ObjectID, firstName, lastName, birthDate, gender string) error {
+	res, err := d.users.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
+		"first_name": firstName,
+		"last_name":  lastName,
+		"birth_date": birthDate,
+		"gender":     gender,
+	}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (d *DB) UpdateUserPasswordHash(ctx context.Context, id primitive.ObjectID, passwordHash string) error {
+	res, err := d.users.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"password_hash": passwordHash}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (d *DB) AppendGoalCoachTurns(ctx context.Context, userID, goalID primitive.ObjectID, userText, assistantText string) error {

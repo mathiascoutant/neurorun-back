@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,8 +45,12 @@ func New(cfg *config.Config, db *store.DB) *Handlers {
 }
 
 type regBody struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	BirthDate string `json:"birth_date"`
+	Gender    string `json:"gender"`
 }
 
 func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
@@ -55,8 +60,50 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b.Email = strings.TrimSpace(strings.ToLower(b.Email))
+	b.FirstName = strings.TrimSpace(b.FirstName)
+	b.LastName = strings.TrimSpace(b.LastName)
+	b.BirthDate = strings.TrimSpace(b.BirthDate)
 	if b.Email == "" || len(b.Password) < 8 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email et mot de passe (8+ caractères) requis"})
+		return
+	}
+	if b.FirstName == "" || b.LastName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "prénom et nom requis"})
+		return
+	}
+	if utf8.RuneCountInString(b.FirstName) > 80 || utf8.RuneCountInString(b.LastName) > 80 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "prénom ou nom trop long"})
+		return
+	}
+	if b.BirthDate == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date de naissance requise"})
+		return
+	}
+	bd, err := time.Parse("2006-01-02", b.BirthDate)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date de naissance invalide (AAAA-MM-JJ)"})
+		return
+	}
+	bd = time.Date(bd.Year(), bd.Month(), bd.Day(), 0, 0, 0, 0, time.UTC)
+	today := time.Now().UTC()
+	todayDay := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
+	if bd.After(todayDay) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date de naissance dans le futur"})
+		return
+	}
+	if bd.Before(time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date de naissance invalide"})
+		return
+	}
+	b.BirthDate = bd.Format("2006-01-02")
+
+	g := strings.TrimSpace(strings.ToLower(b.Gender))
+	switch g {
+	case "", models.GenderUnspecified:
+		g = models.GenderUnspecified
+	case models.GenderFemale, models.GenderMale, models.GenderOther:
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sexe invalide"})
 		return
 	}
 
@@ -66,7 +113,14 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := h.db.CreateUser(r.Context(), b.Email, hash)
+	u, err := h.db.CreateUser(r.Context(), store.CreateUserInput{
+		Email:        b.Email,
+		PasswordHash: hash,
+		FirstName:    b.FirstName,
+		LastName:     b.LastName,
+		BirthDate:    b.BirthDate,
+		Gender:       g,
+	})
 	if errors.Is(err, store.ErrDuplicateEmail) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "email déjà utilisé"})
 		return
@@ -93,6 +147,41 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		"token": token,
 		"user":  userPublic(u, caps),
 	})
+}
+
+var registerEmailRx = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+
+func registerEmailLooksValid(email string) bool {
+	if len(email) < 4 || len(email) > 254 {
+		return false
+	}
+	return registerEmailRx.MatchString(email)
+}
+
+// RegisterCheckEmail — public : vérifie format + disponibilité avant l’inscription multi-étapes.
+func (h *Handlers) RegisterCheckEmail(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "requête invalide"})
+		return
+	}
+	email := strings.TrimSpace(strings.ToLower(b.Email))
+	if !registerEmailLooksValid(email) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "adresse email invalide"})
+		return
+	}
+	_, err := h.db.FindUserByEmail(r.Context(), email)
+	if err == nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"available": false})
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusOK, map[string]bool{"available": true})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur serveur"})
 }
 
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +228,10 @@ func userPublic(u *models.User, capabilities map[string]bool) map[string]any {
 	m := map[string]any{
 		"id":            u.ID.Hex(),
 		"email":         u.Email,
+		"first_name":    u.FirstName,
+		"last_name":     u.LastName,
+		"birth_date":    u.BirthDate,
+		"gender":        u.Gender,
 		"strava_linked": u.HasStrava(),
 		"created_at":    u.CreatedAt.Format(time.RFC3339),
 		"role":          u.EffectiveRole(),
@@ -160,6 +253,126 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, userPublic(u, caps))
+}
+
+type patchMeBody struct {
+	FirstName       string `json:"first_name"`
+	LastName        string `json:"last_name"`
+	BirthDate       string `json:"birth_date"`
+	Gender          string `json:"gender"`
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+func validateProfileFields(firstName, lastName, birthDate string, gender string) (string, string, string, string, string) {
+	firstName = strings.TrimSpace(firstName)
+	lastName = strings.TrimSpace(lastName)
+	birthDate = strings.TrimSpace(birthDate)
+	gender = strings.TrimSpace(strings.ToLower(gender))
+	if firstName == "" || lastName == "" {
+		return "", "", "", "", "prénom et nom requis"
+	}
+	if utf8.RuneCountInString(firstName) > 80 || utf8.RuneCountInString(lastName) > 80 {
+		return "", "", "", "", "prénom ou nom trop long"
+	}
+	if birthDate == "" {
+		return "", "", "", "", "date de naissance requise"
+	}
+	bd, err := time.Parse("2006-01-02", birthDate)
+	if err != nil {
+		return "", "", "", "", "date de naissance invalide (AAAA-MM-JJ)"
+	}
+	bd = time.Date(bd.Year(), bd.Month(), bd.Day(), 0, 0, 0, 0, time.UTC)
+	today := time.Now().UTC()
+	todayDay := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
+	if bd.After(todayDay) {
+		return "", "", "", "", "date de naissance dans le futur"
+	}
+	if bd.Before(time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		return "", "", "", "", "date de naissance invalide"
+	}
+	birthDate = bd.Format("2006-01-02")
+	switch gender {
+	case "", models.GenderUnspecified:
+		gender = models.GenderUnspecified
+	case models.GenderFemale, models.GenderMale, models.GenderOther:
+	default:
+		return "", "", "", "", "sexe invalide"
+	}
+	return firstName, lastName, birthDate, gender, ""
+}
+
+// PatchMe met à jour le profil ; mot de passe optionnel (current + new).
+func (h *Handlers) PatchMe(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	var b patchMeBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json invalide"})
+		return
+	}
+	fn, ln, bd, g, vErr := validateProfileFields(b.FirstName, b.LastName, b.BirthDate, b.Gender)
+	if vErr != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": vErr})
+		return
+	}
+	if err := h.db.UpdateUserProfile(r.Context(), u.ID, fn, ln, bd, g); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
+		return
+	}
+	newPwd := strings.TrimSpace(b.NewPassword)
+	if newPwd != "" {
+		if len(newPwd) < 8 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nouveau mot de passe : 8 caractères minimum"})
+			return
+		}
+		if !auth.CheckPassword(u.PasswordHash, b.CurrentPassword) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "mot de passe actuel incorrect"})
+			return
+		}
+		hash, err := auth.HashPassword(newPwd)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "serveur"})
+			return
+		}
+		if err := h.db.UpdateUserPasswordHash(r.Context(), u.ID, hash); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
+			return
+		}
+	}
+	refreshed, err := h.db.FindUserByID(r.Context(), u.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "serveur"})
+		return
+	}
+	caps, err := h.capabilitiesForUser(r.Context(), refreshed)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
+		return
+	}
+	writeJSON(w, http.StatusOK, userPublic(refreshed, caps))
+}
+
+type deleteAccountBody struct {
+	Password string `json:"password"`
+}
+
+// DeleteMyAccount supprime définitivement le compte et toutes les données (conversations, objectifs, courses live).
+func (h *Handlers) DeleteMyAccount(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	var b deleteAccountBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json invalide"})
+		return
+	}
+	if !auth.CheckPassword(u.PasswordHash, b.Password) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "mot de passe incorrect"})
+		return
+	}
+	if err := h.db.DeleteUserCascade(r.Context(), u.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "suppression impossible"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
@@ -968,6 +1181,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func (h *Handlers) Mount(r chi.Router) {
+	r.Post("/auth/register/check-email", h.RegisterCheckEmail)
 	r.Post("/auth/register", h.Register)
 	r.Post("/auth/login", h.Login)
 	r.Get("/strava/callback", h.StravaCallback)
@@ -994,6 +1208,8 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/checkout/preview", h.CheckoutPreview)
 		pr.Post("/checkout/subscribe", h.CheckoutSubscribe)
 		pr.Get("/me", h.Me)
+		pr.Patch("/me", h.PatchMe)
+		pr.Post("/me/delete-account", h.DeleteMyAccount)
 		pr.Get("/strava/dashboard", h.StravaDashboard)
 		pr.Get("/strava/forecast", h.StravaRaceForecast)
 		pr.Post("/strava/forecast/adjust", h.StravaRaceForecastAdjust)
