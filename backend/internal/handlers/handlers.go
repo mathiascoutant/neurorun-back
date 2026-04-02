@@ -1201,6 +1201,12 @@ func (h *Handlers) Mount(r chi.Router) {
 		ar.Delete("/promo-codes/{id}", h.AdminDeletePromo)
 		ar.Get("/offer-config", h.AdminGetOfferConfig)
 		ar.Put("/offer-config", h.AdminPutOfferConfig)
+		ar.Get("/circuits", h.AdminListCircuits)
+		ar.Get("/circuit-times/search", h.AdminSearchCircuitTimesByUser)
+		ar.Get("/circuits/{id}/times", h.AdminListCircuitTimes)
+		ar.Patch("/circuits/{id}", h.AdminPatchCircuit)
+		ar.Delete("/circuits/{id}", h.AdminDeleteCircuit)
+		ar.Delete("/circuit-times/{id}", h.AdminDeleteCircuitTime)
 	})
 
 	r.Group(func(pr chi.Router) {
@@ -1229,5 +1235,9 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/live-runs", h.CreateLiveRun)
 		pr.Get("/live-runs", h.ListLiveRuns)
 		pr.Get("/live-runs/{id}", h.GetLiveRun)
+		pr.Get("/circuits/near", h.CircuitsNear)
+		pr.Post("/circuits", h.CreateCircuit)
+		pr.Get("/circuits/{id}", h.GetCircuit)
+		pr.Post("/circuits/{id}/times", h.PostCircuitTime)
 	})
 }

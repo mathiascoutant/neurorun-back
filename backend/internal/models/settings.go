@@ -8,6 +8,8 @@ type TierFeatures struct {
 	LiveRuns        bool `json:"live_runs" bson:"live_runs"`
 	Forecast        bool `json:"forecast" bson:"forecast"`
 	Circuit         bool `json:"circuit" bson:"circuit"`
+	// CircuitTracks : parcours GPS partagés + classements (souvent réservé à Performance).
+	CircuitTracks bool `json:"circuit_tracks" bson:"circuit_tracks"`
 }
 
 // OfferConfig : document unique (clé fixe côté store) — prix + flags par palier.
@@ -22,15 +24,15 @@ func DefaultOfferConfig() OfferConfig {
 		Tiers: map[string]TierFeatures{
 			"standard": {
 				CoachChat: true, StravaDashboard: false, Goals: true, LiveRuns: true,
-				Forecast: false, Circuit: false,
+				Forecast: false, Circuit: false, CircuitTracks: false,
 			},
 			"strava": {
 				CoachChat: true, StravaDashboard: true, Goals: true, LiveRuns: true,
-				Forecast: true, Circuit: false,
+				Forecast: true, Circuit: false, CircuitTracks: false,
 			},
 			"performance": {
 				CoachChat: true, StravaDashboard: true, Goals: true, LiveRuns: true,
-				Forecast: true, Circuit: true,
+				Forecast: true, Circuit: true, CircuitTracks: true,
 			},
 		},
 		PricesEUR: map[string]float64{
@@ -70,6 +72,7 @@ func (c *OfferConfig) CapabilitiesForPlan(plan string) map[string]bool {
 	if !ok {
 		t = c.Tiers[PlanStandard]
 	}
+	tracks := t.CircuitTracks
 	return map[string]bool{
 		"coach_chat":       t.CoachChat,
 		"strava_dashboard": t.StravaDashboard,
@@ -77,5 +80,6 @@ func (c *OfferConfig) CapabilitiesForPlan(plan string) map[string]bool {
 		"live_runs":        t.LiveRuns,
 		"forecast":         t.Forecast,
 		"circuit":          t.Circuit,
+		"circuit_tracks":   tracks,
 	}
 }

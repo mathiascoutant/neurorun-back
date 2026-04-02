@@ -96,14 +96,27 @@ func (h *Handlers) AdminGetUser(w http.ResponseWriter, r *http.Request) {
 	gc, _ := h.db.CountGoalsByUser(r.Context(), oid)
 	rc, _ := h.db.CountLiveRunsForUser(r.Context(), oid)
 	goals, _ := h.db.ListGoalsSummariesByUser(r.Context(), oid, 30)
-	runs, _ := h.db.ListLiveRunsByUser(r.Context(), oid, 25)
+	runDocs, _ := h.db.ListLiveRunsByUser(r.Context(), oid, 80)
+	runSummaries := make([]models.LiveRunListItem, 0, len(runDocs))
+	for _, lr := range runDocs {
+		runSummaries = append(runSummaries, models.LiveRunListItem{
+			ID:              lr.ID.Hex(),
+			CreatedAt:       lr.CreatedAt.UTC().Format(time.RFC3339),
+			TargetKm:        lr.TargetKm,
+			DistanceM:       lr.DistanceM,
+			MovingSec:       lr.MovingSec,
+			WallSec:         lr.WallSec,
+			AvgPaceSecPerKm: lr.AvgPaceSecPerKm,
+			SplitCount:      len(lr.Splits),
+		})
+	}
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":        userPublic(u, caps),
 		"goals_count": gc,
 		"runs_count":  rc,
 		"goals":       goals,
-		"live_runs":   runs,
+		"live_runs":   runSummaries,
 	})
 }
 

@@ -32,6 +32,8 @@ type DB struct {
 	liveRuns      *mongo.Collection
 	settings      *mongo.Collection
 	promoCodes    *mongo.Collection
+	circuits      *mongo.Collection
+	circuitTimes  *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -80,6 +82,8 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	liveRuns := database.Collection("live_runs")
 	settings := database.Collection("settings")
 	promoCodes := database.Collection("promo_codes")
+	circuits := database.Collection("circuits")
+	circuitTimes := database.Collection("circuit_times")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -97,6 +101,15 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		Keys:    bson.D{{Key: "code", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
+	_, _ = circuits.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "center", Value: "2dsphere"}},
+	})
+	_, _ = circuitTimes.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "circuit_id", Value: 1}, {Key: "duration_ms", Value: 1}},
+	})
+	_, _ = circuitTimes.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}},
+	})
 	return &DB{
 		client:        client,
 		database:      database,
@@ -106,6 +119,8 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		liveRuns:      liveRuns,
 		settings:      settings,
 		promoCodes:    promoCodes,
+		circuits:      circuits,
+		circuitTimes:  circuitTimes,
 	}, nil
 }
 
