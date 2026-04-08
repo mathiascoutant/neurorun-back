@@ -1,0 +1,5 @@
+# Secrets & environnement local (ne jamais committer)
+backend/.env
+.env
+.env.local
+*.local.env

@@ -671,6 +671,47 @@ func (h *Handlers) DeleteConversation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type patchConversationBody struct {
+	Title string `json:"title"`
+}
+
+func (h *Handlers) PatchConversation(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "coach_chat") {
+		return
+	}
+	idHex := chi.URLParam(r, "id")
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
+		return
+	}
+	var b patchConversationBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json invalide"})
+		return
+	}
+	title := strings.TrimSpace(b.Title)
+	if title == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "titre requis"})
+		return
+	}
+	if utf8.RuneCountInString(title) > 200 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "titre trop long (200 caractère max)"})
+		return
+	}
+	item, err := h.db.UpdateConversationTitleByUser(r.Context(), u.ID, oid, title)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
 	if !h.requireCapability(w, r, u, "coach_chat") {
@@ -1223,6 +1264,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/conversations", h.CreateConversation)
 		pr.Get("/conversations", h.ListConversations)
 		pr.Get("/conversations/{id}", h.GetConversation)
+		pr.Patch("/conversations/{id}", h.PatchConversation)
 		pr.Delete("/conversations/{id}", h.DeleteConversation)
 		pr.Post("/goals/feasibility", h.GoalFeasibility)
 		pr.Post("/goals", h.CreateGoal)

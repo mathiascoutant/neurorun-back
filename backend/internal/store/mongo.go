@@ -284,6 +284,26 @@ func (d *DB) DeleteConversationByUser(ctx context.Context, userID, convID primit
 	return nil
 }
 
+// UpdateConversationTitleByUser met à jour uniquement le titre (listing + détail).
+func (d *DB) UpdateConversationTitleByUser(ctx context.Context, userID, convID primitive.ObjectID, title string) (*models.ConversationListItem, error) {
+	now := time.Now().UTC()
+	res, err := d.conversations.UpdateOne(ctx,
+		bson.M{"_id": convID, "user_id": userID},
+		bson.M{"$set": bson.M{"title": title, "updated_at": now}},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if res.MatchedCount == 0 {
+		return nil, ErrNotFound
+	}
+	return &models.ConversationListItem{
+		ID:        convID,
+		Title:     title,
+		UpdatedAt: now,
+	}, nil
+}
+
 func (d *DB) AppendConversationTurns(ctx context.Context, userID, convID primitive.ObjectID, userText, assistantText string, newTitle *string) error {
 	now := time.Now().UTC()
 	turns := []models.ChatTurn{
