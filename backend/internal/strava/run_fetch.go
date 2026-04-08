@@ -81,6 +81,76 @@ func (c *Client) FetchRunActivities(ctx context.Context, accessToken string, aft
 	return all, nil
 }
 
+// FetchRunActivitiesBefore récupère jusqu'à maxTotal activités course dont la date de début est
+// strictement antérieure à before (UT), en parcourant /athlete/activities avec le paramètre before.
+func (c *Client) FetchRunActivitiesBefore(ctx context.Context, accessToken string, before time.Time, maxTotal int) ([]RunActivity, error) {
+	if maxTotal <= 0 {
+		maxTotal = 30
+	}
+	if maxTotal > 200 {
+		maxTotal = 200
+	}
+	beforeSec := before.Unix()
+	if beforeSec < 1 {
+		beforeSec = time.Now().UTC().Add(time.Minute).Unix()
+	}
+	var all []RunActivity
+	const perPage = 50
+	maxPages := (maxTotal + perPage - 1) / perPage
+	if maxPages < 1 {
+		maxPages = 1
+	}
+	if maxPages > 10 {
+		maxPages = 10
+	}
+	for page := 1; page <= maxPages && len(all) < maxTotal; page++ {
+		u := fmt.Sprintf("%s/athlete/activities?per_page=%d&page=%d&before=%d", apiBase, perPage, page, beforeSec)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("strava activities before page %d: %s: %s", page, resp.Status, string(body))
+		}
+
+		var raw []map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			break
+		}
+		for _, m := range raw {
+			ra, ok := mapToRunActivity(m)
+			if !ok {
+				continue
+			}
+			if !ra.StartAt.Before(before) {
+				continue
+			}
+			all = append(all, ra)
+			if len(all) >= maxTotal {
+				break
+			}
+		}
+		if len(raw) < perPage {
+			break
+		}
+	}
+	return all, nil
+}
+
 func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 	typ, _ := m["type"].(string)
 	if !runActivityTypes(typ) {

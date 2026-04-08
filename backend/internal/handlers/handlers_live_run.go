@@ -5,10 +5,14 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"runapp/internal/models"
 	"runapp/internal/store"
+	"runapp/internal/strava"
 
 	"github.com/go-chi/chi/v5"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -131,6 +135,127 @@ func (h *Handlers) ListLiveRuns(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": out})
+}
+
+type runHistoryFeedRow struct {
+	at time.Time
+	m  map[string]any
+}
+
+// RunHistoryFeed renvoie une page d’historique mélangé : courses NeuroRun + courses Strava si le compte est lié.
+// Query: limit (défaut 10, max 30), before (RFC3339 / RFC3339Nano, curseur exclusif pour la pagination).
+func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "live_runs") {
+		return
+	}
+
+	limit := 10
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 30 {
+			limit = n
+		}
+	}
+
+	cursorBefore := time.Now().UTC().Add(time.Second)
+	if b := strings.TrimSpace(r.URL.Query().Get("before")); b != "" {
+		var parsed time.Time
+		var err error
+		parsed, err = time.Parse(time.RFC3339Nano, b)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, b)
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "before invalide (RFC3339)"})
+			return
+		}
+		cursorBefore = parsed.UTC()
+	}
+
+	fetchN := limit * 5
+	if fetchN > 80 {
+		fetchN = 80
+	}
+	if fetchN < 20 {
+		fetchN = 20
+	}
+
+	liveList, err := h.db.ListLiveRunsByUserBefore(r.Context(), u.ID, cursorBefore, fetchN)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste live impossible"})
+		return
+	}
+
+	var stravaActs []strava.RunActivity
+	stravaIncluded := false
+	if u.HasStrava() {
+		access, err := h.ensureStravaAccess(r.Context(), u)
+		if err == nil {
+			stravaActs, err = h.strava.FetchRunActivitiesBefore(r.Context(), access, cursorBefore, fetchN)
+			if err == nil {
+				stravaIncluded = true
+			}
+		}
+	}
+
+	var rows []runHistoryFeedRow
+	for _, lr := range liveList {
+		at := lr.CreatedAt.UTC()
+		rows = append(rows, runHistoryFeedRow{
+			at: at,
+			m: map[string]any{
+				"source":              "live",
+				"id":                  lr.ID.Hex(),
+				"created_at":          at.Format(time.RFC3339),
+				"distance_m":          lr.DistanceM,
+				"moving_sec":          lr.MovingSec,
+				"avg_pace_sec_per_km": lr.AvgPaceSecPerKm,
+				"split_count":         len(lr.Splits),
+			},
+		})
+	}
+	for _, ar := range stravaActs {
+		at := ar.StartAt.UTC()
+		pace := 0.0
+		if ar.AvgSpeed > 0 {
+			pace = 1000.0 / ar.AvgSpeed
+		}
+		row := map[string]any{
+			"source":              "strava",
+			"strava_activity_id":  ar.ID,
+			"name":                ar.Name,
+			"start_date":          at.Format(time.RFC3339),
+			"distance_m":          ar.DistanceM,
+			"moving_sec":          float64(ar.MovingSec),
+			"avg_pace_sec_per_km": pace,
+			"activity_type":       ar.Type,
+		}
+		rows = append(rows, runHistoryFeedRow{at: at, m: row})
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].at.After(rows[j].at)
+	})
+
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+
+	items := make([]map[string]any, len(rows))
+	for i, row := range rows {
+		items[i] = row.m
+	}
+
+	resp := map[string]any{
+		"items":           items,
+		"strava_included": stravaIncluded,
+	}
+	if len(rows) == limit {
+		oldest := rows[len(rows)-1].at
+		resp["next_before"] = oldest.Add(-time.Millisecond).UTC().Format(time.RFC3339Nano)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handlers) GetLiveRun(w http.ResponseWriter, r *http.Request) {

@@ -1277,6 +1277,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/live-runs", h.CreateLiveRun)
 		pr.Get("/live-runs", h.ListLiveRuns)
 		pr.Get("/live-runs/{id}", h.GetLiveRun)
+		pr.Get("/run-history/feed", h.RunHistoryFeed)
 		pr.Get("/circuits/near", h.CircuitsNear)
 		pr.Post("/circuits", h.CreateCircuit)
 		pr.Get("/circuits/{id}", h.GetCircuit)

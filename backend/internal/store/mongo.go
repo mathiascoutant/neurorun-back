@@ -451,6 +451,34 @@ func (d *DB) ListLiveRunsByUser(ctx context.Context, userID primitive.ObjectID, 
 	return out, cur.Err()
 }
 
+// ListLiveRunsByUserBefore retourne les courses live les plus récentes avec created_at strictement < before.
+func (d *DB) ListLiveRunsByUserBefore(ctx context.Context, userID primitive.ObjectID, before time.Time, limit int) ([]models.LiveRun, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	filter := bson.M{"user_id": userID}
+	if !before.IsZero() {
+		filter["created_at"] = bson.M{"$lt": before.UTC()}
+	}
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetLimit(int64(limit))
+	cur, err := d.liveRuns.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.LiveRun
+	for cur.Next(ctx) {
+		var lr models.LiveRun
+		if err := cur.Decode(&lr); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, cur.Err()
+}
+
 func (d *DB) GetLiveRunByUser(ctx context.Context, userID, runID primitive.ObjectID) (*models.LiveRun, error) {
 	var lr models.LiveRun
 	err := d.liveRuns.FindOne(ctx, bson.M{"_id": runID, "user_id": userID}).Decode(&lr)
