@@ -14,14 +14,17 @@ const dashboardPerPage = 200
 
 // RunActivity est une sortie course Strava parsée pour le dashboard.
 type RunActivity struct {
-	ID        int64
-	Name      string
-	Type      string
-	StartAt   time.Time
-	DistanceM float64
-	MovingSec int
-	AvgSpeed  float64
-	AvgHR     *float64
+	ID          int64
+	Name        string
+	Type        string
+	StartAt     time.Time
+	DistanceM   float64
+	MovingSec   int
+	ElapsedSec  int
+	AvgSpeed    float64
+	MaxSpeedMps float64
+	ElevGainM   float64
+	AvgHR       *float64
 }
 
 func runActivityTypes(t string) bool {
@@ -166,7 +169,13 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 	}
 	dist := jsonFloat(m["distance"])
 	mov := int(jsonFloat(m["moving_time"]))
+	elapsed := int(jsonFloat(m["elapsed_time"]))
+	if elapsed <= 0 {
+		elapsed = mov
+	}
 	avgSp := jsonFloat(m["average_speed"])
+	maxSp := jsonFloat(m["max_speed"])
+	elev := jsonFloat(m["total_elevation_gain"])
 	var hr *float64
 	if v, ok := m["average_heartrate"]; ok && v != nil {
 		h := jsonFloat(v)
@@ -177,13 +186,16 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 	name, _ := m["name"].(string)
 	id := int64(jsonFloat(m["id"]))
 	return RunActivity{
-		ID:        id,
-		Name:      name,
-		Type:      typ,
-		StartAt:   st.UTC(),
-		DistanceM: dist,
-		MovingSec: mov,
-		AvgSpeed:  avgSp,
-		AvgHR:     hr,
+		ID:          id,
+		Name:        name,
+		Type:        typ,
+		StartAt:     st.UTC(),
+		DistanceM:   dist,
+		MovingSec:   mov,
+		ElapsedSec:  elapsed,
+		AvgSpeed:    avgSp,
+		MaxSpeedMps: maxSp,
+		ElevGainM:   elev,
+		AvgHR:       hr,
 	}, true
 }

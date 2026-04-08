@@ -227,8 +227,14 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 			"start_date":          at.Format(time.RFC3339),
 			"distance_m":          ar.DistanceM,
 			"moving_sec":          float64(ar.MovingSec),
+			"elapsed_sec":         float64(ar.ElapsedSec),
 			"avg_pace_sec_per_km": pace,
 			"activity_type":       ar.Type,
+			"elevation_gain_m":    ar.ElevGainM,
+			"max_speed_kmh":       ar.MaxSpeedMps * 3.6,
+		}
+		if ar.AvgHR != nil {
+			row["avg_heartrate"] = *ar.AvgHR
 		}
 		rows = append(rows, runHistoryFeedRow{at: at, m: row})
 	}
