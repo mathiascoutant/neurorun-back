@@ -14,6 +14,25 @@ type LiveRunSplit struct {
 	EndTimestampMs   int64   `bson:"end_timestamp_ms" json:"end_timestamp_ms"`
 }
 
+// LiveRunClientStats : agrégats calculés côté app (vitesse max, allures splits, dénivelé, etc.).
+type LiveRunClientStats struct {
+	MaxSpeedKmh          float64 `bson:"max_speed_kmh,omitempty" json:"max_speed_kmh,omitempty"`
+	AvgSpeedKmh          float64 `bson:"avg_speed_kmh,omitempty" json:"avg_speed_kmh,omitempty"`
+	AvgPaceSecPerKm      float64 `bson:"avg_pace_sec_per_km,omitempty" json:"avg_pace_sec_per_km,omitempty"`
+	MinSplitPaceSecPerKm float64 `bson:"min_split_pace_sec_per_km,omitempty" json:"min_split_pace_sec_per_km,omitempty"`
+	MaxSplitPaceSecPerKm float64 `bson:"max_split_pace_sec_per_km,omitempty" json:"max_split_pace_sec_per_km,omitempty"`
+	ElevationGainM       float64 `bson:"elevation_gain_m,omitempty" json:"elevation_gain_m,omitempty"`
+	ElevationLossM       float64 `bson:"elevation_loss_m,omitempty" json:"elevation_loss_m,omitempty"`
+	MaxAltitudeM         float64 `bson:"max_altitude_m,omitempty" json:"max_altitude_m,omitempty"`
+	MinAltitudeM         float64 `bson:"min_altitude_m,omitempty" json:"min_altitude_m,omitempty"`
+	PauseOverheadSec     float64 `bson:"pause_overhead_sec,omitempty" json:"pause_overhead_sec,omitempty"`
+	TrackPointCount      int     `bson:"track_point_count,omitempty" json:"track_point_count,omitempty"`
+	SplitCount           int     `bson:"split_count,omitempty" json:"split_count,omitempty"`
+	DistanceKm           float64 `bson:"distance_km,omitempty" json:"distance_km,omitempty"`
+	MovingSec            float64 `bson:"moving_sec,omitempty" json:"moving_sec,omitempty"`
+	WallSec              float64 `bson:"wall_sec,omitempty" json:"wall_sec,omitempty"`
+}
+
 // LiveRunTrackPoint : échantillon de trace (navigateur).
 type LiveRunTrackPoint struct {
 	Lat        float64  `bson:"lat" json:"lat"`
@@ -40,6 +59,7 @@ type LiveRun struct {
 
 	AvgPaceSecPerKm    float64  `bson:"avg_pace_sec_per_km" json:"avg_pace_sec_per_km"`
 	MaxImpliedSpeedKmh float64  `bson:"max_implied_speed_kmh,omitempty" json:"max_implied_speed_kmh,omitempty"`
+	ClientStats        *LiveRunClientStats  `bson:"client_stats,omitempty" json:"client_stats,omitempty"`
 	Splits             []LiveRunSplit `bson:"splits" json:"splits"`
 	TrackPoints        []LiveRunTrackPoint `bson:"track_points,omitempty" json:"track_points,omitempty"`
 

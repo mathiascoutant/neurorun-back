@@ -29,6 +29,7 @@ type liveRunCreateBody struct {
 
 	AvgPaceSecPerKm    float64 `json:"avg_pace_sec_per_km"`
 	MaxImpliedSpeedKmh float64 `json:"max_implied_speed_kmh"`
+	ClientStats        *models.LiveRunClientStats `json:"client_stats"`
 	Splits             []models.LiveRunSplit `json:"splits"`
 	TrackPoints        []models.LiveRunTrackPoint `json:"track_points"`
 
@@ -83,6 +84,7 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 		GpsEndTsMs:         b.GpsEndTsMs,
 		AvgPaceSecPerKm:    avg,
 		MaxImpliedSpeedKmh: b.MaxImpliedSpeedKmh,
+		ClientStats:        b.ClientStats,
 		Splits:             b.Splits,
 		TrackPoints:        b.TrackPoints,
 		ClientVersion:      b.ClientVersion,
@@ -155,7 +157,7 @@ func (h *Handlers) GetLiveRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func liveRunToJSON(lr *models.LiveRun) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"id":                    lr.ID.Hex(),
 		"created_at":            lr.CreatedAt.UTC().Format(time.RFC3339),
 		"target_km":             lr.TargetKm,
@@ -176,4 +178,8 @@ func liveRunToJSON(lr *models.LiveRun) map[string]any {
 		"online_at_end":         lr.OnlineAtEnd,
 		"auto_pause_detected":   lr.AutoPauseDetected,
 	}
+	if lr.ClientStats != nil {
+		m["client_stats"] = lr.ClientStats
+	}
+	return m
 }
