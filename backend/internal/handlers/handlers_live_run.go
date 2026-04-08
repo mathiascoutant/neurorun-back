@@ -287,6 +287,44 @@ func (h *Handlers) GetLiveRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, liveRunToJSON(run))
 }
 
+// GetStravaActivityDetail renvoie le détail d’une activité Strava au même format JSON qu’un live run (splits, stats, trace résamée).
+func (h *Handlers) GetStravaActivityDetail(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "live_runs") {
+		return
+	}
+	if !u.HasStrava() {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "strava non lié"})
+		return
+	}
+	idStr := strings.TrimSpace(chi.URLParam(r, "id"))
+	aid, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || aid <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id activité invalide"})
+		return
+	}
+	token, err := h.ensureStravaAccess(r.Context(), u)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "tokens Strava indisponibles"})
+		return
+	}
+	act, err := h.strava.FetchActivityDetail(r.Context(), token, aid)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "activité introuvable"})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Strava indisponible"})
+		return
+	}
+	st, err := h.strava.FetchActivityStreams(r.Context(), token, aid)
+	if err != nil || st == nil {
+		st = &strava.ActivityStreams{}
+	}
+	m := strava.BuildLiveRunDetailMap(act, st)
+	writeJSON(w, http.StatusOK, m)
+}
+
 func liveRunToJSON(lr *models.LiveRun) map[string]any {
 	m := map[string]any{
 		"id":                    lr.ID.Hex(),
