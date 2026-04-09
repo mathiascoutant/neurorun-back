@@ -164,6 +164,43 @@ func (d *DB) CountDistinctCircuitParticipants(ctx context.Context, circuitID pri
 	return doc.N, nil
 }
 
+// CountDistinctParticipantsPerCircuits : pour chaque circuit, nombre d’utilisateurs distincts ayant enregistré au moins un temps.
+func (d *DB) CountDistinctParticipantsPerCircuits(ctx context.Context, circuitIDs []primitive.ObjectID) (map[primitive.ObjectID]int64, error) {
+	out := make(map[primitive.ObjectID]int64)
+	if len(circuitIDs) == 0 {
+		return out, nil
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"circuit_id": bson.M{"$in": circuitIDs}}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": bson.M{
+				"circuit_id": "$circuit_id",
+				"user_id":    "$user_id",
+			},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":   "$_id.circuit_id",
+			"count": bson.M{"$sum": 1},
+		}}},
+	}
+	cur, err := d.circuitTimes.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	for cur.Next(ctx) {
+		var row struct {
+			ID    primitive.ObjectID `bson:"_id"`
+			Count int64              `bson:"count"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return nil, err
+		}
+		out[row.ID] = row.Count
+	}
+	return out, cur.Err()
+}
+
 func (d *DB) DeleteCircuitTime(ctx context.Context, id primitive.ObjectID) error {
 	res, err := d.circuitTimes.DeleteOne(ctx, bson.M{"_id": id})
 	if err != nil {

@@ -62,9 +62,19 @@ func (h *Handlers) CircuitsNear(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste"})
 		return
 	}
+	ids := make([]primitive.ObjectID, 0, len(list))
+	for i := range list {
+		ids = append(ids, list[i].ID)
+	}
+	partPer, perr := h.db.CountDistinctParticipantsPerCircuits(r.Context(), ids)
+	if perr != nil {
+		partPer = make(map[primitive.ObjectID]int64)
+	}
 	out := make([]map[string]any, 0, len(list))
 	for _, c := range list {
-		out = append(out, circuitSummaryJSON(&c))
+		m := circuitSummaryJSON(&c)
+		m["participant_count"] = partPer[c.ID]
+		out = append(out, m)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"circuits": out})
 }
