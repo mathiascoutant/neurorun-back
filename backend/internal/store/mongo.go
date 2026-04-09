@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
@@ -185,6 +186,40 @@ func (d *DB) FindUserByID(ctx context.Context, id primitive.ObjectID) (*models.U
 		return nil, err
 	}
 	return &u, nil
+}
+
+// FindUserIDsByNameContains : prénom ou nom contient frag (sous-chaîne, insensible à la casse).
+func (d *DB) FindUserIDsByNameContains(ctx context.Context, frag string, limit int64) ([]primitive.ObjectID, error) {
+	frag = strings.TrimSpace(frag)
+	if frag == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 30
+	}
+	pattern := ".*" + regexp.QuoteMeta(frag) + ".*"
+	filter := bson.M{
+		"$or": []bson.M{
+			{"first_name": bson.M{"$regex": pattern, "$options": "i"}},
+			{"last_name": bson.M{"$regex": pattern, "$options": "i"}},
+		},
+	}
+	cur, err := d.users.Find(ctx, filter, options.Find().SetLimit(limit).SetProjection(bson.M{"_id": 1}))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []primitive.ObjectID
+	for cur.Next(ctx) {
+		var doc struct {
+			ID primitive.ObjectID `bson:"_id"`
+		}
+		if err := cur.Decode(&doc); err != nil {
+			return nil, err
+		}
+		out = append(out, doc.ID)
+	}
+	return out, cur.Err()
 }
 
 // SetUserLastSeenNow enregistre l’instant présent comme dernière activité (ex. login).

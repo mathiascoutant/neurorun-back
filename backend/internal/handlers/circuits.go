@@ -40,7 +40,25 @@ func validateCircuitPoints(points []models.LatLng, start int) string {
 	return ""
 }
 
-// GET /circuits/near?lat=&lng=&radius_km=
+func (h *Handlers) circuitsListResponse(ctx context.Context, list []models.Circuit) []map[string]any {
+	ids := make([]primitive.ObjectID, 0, len(list))
+	for i := range list {
+		ids = append(ids, list[i].ID)
+	}
+	partPer, perr := h.db.CountDistinctParticipantsPerCircuits(ctx, ids)
+	if perr != nil {
+		partPer = make(map[primitive.ObjectID]int64)
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, c := range list {
+		m := circuitSummaryJSON(&c)
+		m["participant_count"] = partPer[c.ID]
+		out = append(out, m)
+	}
+	return out
+}
+
+// GET /circuits/near?lat=&lng=&radius_km= (défaut 3 km)
 func (h *Handlers) CircuitsNear(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
 	if !h.requireCapability(w, r, u, "circuit_tracks") {
@@ -50,7 +68,7 @@ func (h *Handlers) CircuitsNear(w http.ResponseWriter, r *http.Request) {
 	lng, _ := strconv.ParseFloat(strings.TrimSpace(r.URL.Query().Get("lng")), 64)
 	radiusKm, _ := strconv.ParseFloat(strings.TrimSpace(r.URL.Query().Get("radius_km")), 64)
 	if radiusKm <= 0 || radiusKm > 200 {
-		radiusKm = 25
+		radiusKm = 3
 	}
 	if !validLatLng(models.LatLng{Lat: lat, Lng: lng}) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "lat/lng invalides"})
@@ -62,21 +80,73 @@ func (h *Handlers) CircuitsNear(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste"})
 		return
 	}
-	ids := make([]primitive.ObjectID, 0, len(list))
-	for i := range list {
-		ids = append(ids, list[i].ID)
+	writeJSON(w, http.StatusOK, map[string]any{"circuits": h.circuitsListResponse(r.Context(), list)})
+}
+
+// GET /circuits/search?q=&lat=&lng=&radius_km=
+// Nom de parcours : uniquement parmi les circuits dans le rayon, filtre sur le nom.
+// Personne : tous les parcours créés par les utilisateurs dont prénom/nom contient q (hors filtre distance).
+func (h *Handlers) CircuitsSearch(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "circuit_tracks") {
+		return
 	}
-	partPer, perr := h.db.CountDistinctParticipantsPerCircuits(r.Context(), ids)
-	if perr != nil {
-		partPer = make(map[primitive.ObjectID]int64)
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if utf8.RuneCountInString(q) < 2 {
+		writeJSON(w, http.StatusOK, map[string]any{"circuits": []any{}})
+		return
 	}
-	out := make([]map[string]any, 0, len(list))
-	for _, c := range list {
-		m := circuitSummaryJSON(&c)
-		m["participant_count"] = partPer[c.ID]
-		out = append(out, m)
+	lat, _ := strconv.ParseFloat(strings.TrimSpace(r.URL.Query().Get("lat")), 64)
+	lng, _ := strconv.ParseFloat(strings.TrimSpace(r.URL.Query().Get("lng")), 64)
+	radiusKm, _ := strconv.ParseFloat(strings.TrimSpace(r.URL.Query().Get("radius_km")), 64)
+	if radiusKm <= 0 || radiusKm > 200 {
+		radiusKm = 3
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"circuits": out})
+	if !validLatLng(models.LatLng{Lat: lat, Lng: lng}) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "lat/lng invalides"})
+		return
+	}
+	radiusM := radiusKm * 1000
+	needle := strings.ToLower(q)
+
+	nearList, err := h.db.FindCircuitsNear(r.Context(), lat, lng, radiusM, 120)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste"})
+		return
+	}
+	var nameMatches []models.Circuit
+	for _, c := range nearList {
+		if strings.Contains(strings.ToLower(c.Name), needle) {
+			nameMatches = append(nameMatches, c)
+		}
+	}
+
+	userIDs, uerr := h.db.FindUserIDsByNameContains(r.Context(), q, 40)
+	if uerr != nil {
+		userIDs = nil
+	}
+	var byCreator []models.Circuit
+	if len(userIDs) > 0 {
+		byCreator, err = h.db.FindCircuitsByCreatedByIn(r.Context(), userIDs, 120)
+		if err != nil {
+			byCreator = nil
+		}
+	}
+
+	inSeen := make(map[primitive.ObjectID]struct{})
+	var merged []models.Circuit
+	for _, c := range nameMatches {
+		inSeen[c.ID] = struct{}{}
+		merged = append(merged, c)
+	}
+	for _, c := range byCreator {
+		if _, dup := inSeen[c.ID]; !dup {
+			inSeen[c.ID] = struct{}{}
+			merged = append(merged, c)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"circuits": h.circuitsListResponse(r.Context(), merged)})
 }
 
 func haversineMeters(lat1, lng1, lat2, lng2 float64) float64 {

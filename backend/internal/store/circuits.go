@@ -77,6 +77,28 @@ func (d *DB) FindCircuitByID(ctx context.Context, id primitive.ObjectID) (*model
 	return &c, nil
 }
 
+// FindCircuitsByCreatedByIn : parcours créés par l’un des utilisateurs (sans filtre géo).
+func (d *DB) FindCircuitsByCreatedByIn(ctx context.Context, userIDs []primitive.ObjectID, limit int64) ([]models.Circuit, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 120 {
+		limit = 80
+	}
+	cur, err := d.circuits.Find(ctx, bson.M{
+		"created_by": bson.M{"$in": userIDs},
+	}, options.Find().SetLimit(limit).SetSort(bson.D{{Key: "created_at", Value: -1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.Circuit
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (d *DB) UpdateCircuitName(ctx context.Context, id primitive.ObjectID, name string) error {
 	res, err := d.circuits.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"name": name}})
 	if err != nil {

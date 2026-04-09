@@ -1280,6 +1280,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/run-history/feed", h.RunHistoryFeed)
 		pr.Get("/strava/activities/{id}", h.GetStravaActivityDetail)
 		pr.Get("/circuits/near", h.CircuitsNear)
+		pr.Get("/circuits/search", h.CircuitsSearch)
 		pr.Post("/circuits", h.CreateCircuit)
 		pr.Get("/circuits/{id}", h.GetCircuit)
 		pr.Post("/circuits/{id}/times", h.PostCircuitTime)
