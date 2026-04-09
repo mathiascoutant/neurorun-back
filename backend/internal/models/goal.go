@@ -20,6 +20,8 @@ type Goal struct {
 	UserID           primitive.ObjectID `bson:"user_id" json:"-"` // jamais exposé au client
 	DistanceKm       float64            `bson:"distance_km" json:"distance_km"`
 	DistanceLabel    string             `bson:"distance_label" json:"distance_label"`
+	// CustomTitle : libellé choisi par l’utilisateur (affiché à la place de distance_label si non vide).
+	CustomTitle      string             `bson:"custom_title,omitempty" json:"custom_title,omitempty"`
 	Weeks            int                `bson:"weeks" json:"weeks"`
 	SessionsPerWeek  int                `bson:"sessions_per_week" json:"sessions_per_week"`
 	TargetTime       string             `bson:"target_time,omitempty" json:"target_time"`

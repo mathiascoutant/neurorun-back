@@ -413,6 +413,24 @@ func (d *DB) DeleteGoalByUser(ctx context.Context, userID, goalID primitive.Obje
 	return nil
 }
 
+// UpdateGoalCustomTitleByUser définit ou efface le nom personnalisé (title vide → suppression du champ).
+func (d *DB) UpdateGoalCustomTitleByUser(ctx context.Context, userID, goalID primitive.ObjectID, title string) error {
+	var update bson.M
+	if title == "" {
+		update = bson.M{"$unset": bson.M{"custom_title": ""}}
+	} else {
+		update = bson.M{"$set": bson.M{"custom_title": title}}
+	}
+	res, err := d.goals.UpdateOne(ctx, bson.M{"_id": goalID, "user_id": userID}, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateGoalTrainingFields remplace le plan Markdown, les séances extraites et les paramètres liés.
 // customOffsets : longueur doit égaler spw et valeurs 0–6 (lun–dim) ; sinon passer nil pour le motif par défaut.
 func (d *DB) UpdateGoalTrainingFields(ctx context.Context, userID, goalID primitive.ObjectID, plan string, planned []models.PlannedSession, weeks, spw int, target string, customOffsets []int, planWithoutStravaData bool) error {

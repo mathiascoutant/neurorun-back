@@ -880,6 +880,48 @@ func (h *Handlers) DeleteGoal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+type patchGoalCustomTitleBody struct {
+	CustomTitle string `json:"custom_title"`
+}
+
+// PatchGoal met à jour le nom affiché (custom_title). Chaîne vide supprime le nom personnalisé.
+func (h *Handlers) PatchGoal(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	if !h.requireCapability(w, r, u, "goals") {
+		return
+	}
+	idHex := chi.URLParam(r, "id")
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
+		return
+	}
+	var b patchGoalCustomTitleBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json invalide"})
+		return
+	}
+	title := strings.TrimSpace(b.CustomTitle)
+	if title != "" && utf8.RuneCountInString(title) > 200 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nom trop long (200 caractères max)"})
+		return
+	}
+	if err := h.db.UpdateGoalCustomTitleByUser(r.Context(), u.ID, oid, title); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
+		return
+	}
+	g, err := h.db.GetGoalByUser(r.Context(), u.ID, oid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur"})
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
 func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
 	if !h.requireCapability(w, r, u, "goals") {
@@ -1272,6 +1314,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/goals/{id}/chat", h.GoalChat)
 		pr.Delete("/goals/{id}", h.DeleteGoal)
 		pr.Get("/goals/{id}/calendar", h.GoalCalendar)
+		pr.Patch("/goals/{id}", h.PatchGoal)
 		pr.Get("/goals/{id}", h.GetGoal)
 		pr.Post("/chat", h.Chat)
 		pr.Post("/live-runs", h.CreateLiveRun)
