@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -68,15 +69,47 @@ func (h *Handlers) CircuitsNear(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"circuits": out})
 }
 
+func haversineMeters(lat1, lng1, lat2, lng2 float64) float64 {
+	const earthR = 6371000.0
+	const toRad = math.Pi / 180.0
+	dLat := (lat2 - lat1) * toRad
+	dLng := (lng2 - lng1) * toRad
+	l1 := lat1 * toRad
+	l2 := lat2 * toRad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(l1)*math.Cos(l2)*math.Sin(dLng/2)*math.Sin(dLng/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return earthR * c
+}
+
+// circuitLoopLengthM : périmètre du polygone fermé (dernier point relié au premier).
+func circuitLoopLengthM(points []models.LatLng) float64 {
+	n := len(points)
+	if n < 2 {
+		return 0
+	}
+	var sum float64
+	for i := 0; i < n; i++ {
+		a := points[i]
+		b := points[(i+1)%n]
+		sum += haversineMeters(a.Lat, a.Lng, b.Lat, b.Lng)
+	}
+	return sum
+}
+
 func circuitSummaryJSON(c *models.Circuit) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"id":          c.ID.Hex(),
 		"name":        c.Name,
 		"start_index": c.StartIndex,
 		"points":      c.Points,
 		"center":      c.Center,
 		"created_at":  c.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"length_m":    math.Round(circuitLoopLengthM(c.Points)*10) / 10,
 	}
+	if !c.CreatedBy.IsZero() {
+		m["created_by"] = c.CreatedBy.Hex()
+	}
+	return m
 }
 
 type createCircuitBody struct {
@@ -193,10 +226,17 @@ func (h *Handlers) GetCircuit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "classement"})
 		return
 	}
+	circ := circuitSummaryJSON(c)
+	if !c.CreatedBy.IsZero() {
+		uu, uerr := h.db.FindUserByID(r.Context(), c.CreatedBy)
+		if uerr == nil && uu != nil {
+			circ["creator_display_name"] = displayNameLeaderboard(uu)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"circuit":               circuitSummaryJSON(c),
-		"top_times":             topJSON,
-		"participant_count":     nPart,
+		"circuit":                circ,
+		"top_times":              topJSON,
+		"participant_count":      nPart,
 		"completion_count_total": nTot,
 	})
 }
