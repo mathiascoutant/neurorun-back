@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"runapp/internal/models"
@@ -49,6 +50,7 @@ type ActivityStreams struct {
 	LatLng         [][2]float64
 	Altitude       []float64
 	VelocitySmooth []float64
+	Heartrate      []float64
 }
 
 // FetchActivityDetail appelle GET /activities/{id}.
@@ -84,10 +86,10 @@ func (c *Client) FetchActivityDetail(ctx context.Context, accessToken string, ac
 	return &act, nil
 }
 
-// FetchActivityStreams appelle GET /activities/{id}/streams (latlng, time, altitude, velocity_smooth).
+// FetchActivityStreams appelle GET /activities/{id}/streams (latlng, time, altitude, velocity_smooth, heartrate).
 // Si aucun flux ou erreur non bloquante, retourne streams vides et nil.
 func (c *Client) FetchActivityStreams(ctx context.Context, accessToken string, activityID int64) (*ActivityStreams, error) {
-	u := fmt.Sprintf("%s/activities/%d/streams?keys=latlng,time,altitude,velocity_smooth", apiBase, activityID)
+	u := fmt.Sprintf("%s/activities/%d/streams?keys=latlng,time,altitude,velocity_smooth,heartrate", apiBase, activityID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -117,7 +119,8 @@ func (c *Client) FetchActivityStreams(ctx context.Context, accessToken string, a
 	}
 	out := &ActivityStreams{}
 	for _, stream := range raw {
-		switch stream.Type {
+		typ := strings.ToLower(strings.TrimSpace(stream.Type))
+		switch typ {
 		case "latlng":
 			var pts [][]float64
 			if json.Unmarshal(stream.Data, &pts) == nil {
@@ -133,9 +136,12 @@ func (c *Client) FetchActivityStreams(ctx context.Context, accessToken string, a
 		case "altitude":
 			json.Unmarshal(stream.Data, &out.Altitude)
 		case "velocity_smooth":
-			var vel []float64
-			if json.Unmarshal(stream.Data, &vel) == nil {
+			if vel := parseNumericStreamData(stream.Data); len(vel) > 0 {
 				out.VelocitySmooth = vel
+			}
+		case "heartrate":
+			if hr := parseNumericStreamData(stream.Data); len(hr) > 0 {
+				out.Heartrate = hr
 			}
 		}
 	}
@@ -188,6 +194,80 @@ func minMaxSplitPace(splits []models.LiveRunSplit) (minP, maxP float64) {
 	return minP, maxP
 }
 
+// resampleFloat64Slice rééchantillonne une série sur n points (interpolation linéaire).
+// Utile quand Strava renvoie des flux de longueurs légèrement différentes (ex. FC vs latlng).
+func resampleFloat64Slice(xs []float64, n int) []float64 {
+	if n <= 0 || len(xs) == 0 {
+		return nil
+	}
+	if len(xs) == n {
+		return xs
+	}
+	if len(xs) == 1 {
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = xs[0]
+		}
+		return out
+	}
+	out := make([]float64, n)
+	last := len(xs) - 1
+	for i := 0; i < n; i++ {
+		if n == 1 {
+			out[i] = xs[0]
+			continue
+		}
+		pos := float64(i) * float64(last) / float64(n-1)
+		j0 := int(math.Floor(pos))
+		j1 := j0 + 1
+		if j1 > last {
+			j1 = last
+		}
+		t := pos - float64(j0)
+		out[i] = xs[j0]*(1-t) + xs[j1]*t
+	}
+	return out
+}
+
+// parseNumericStreamData accepte tableaux JSON de nombres entiers ou flottants, ou valeurs hétérogènes.
+func parseNumericStreamData(raw json.RawMessage) []float64 {
+	var floats []float64
+	if err := json.Unmarshal(raw, &floats); err == nil && len(floats) > 0 {
+		return floats
+	}
+	var ints []int
+	if err := json.Unmarshal(raw, &ints); err == nil && len(ints) > 0 {
+		out := make([]float64, len(ints))
+		for i, v := range ints {
+			out[i] = float64(v)
+		}
+		return out
+	}
+	var mix []any
+	if err := json.Unmarshal(raw, &mix); err != nil || len(mix) == 0 {
+		return nil
+	}
+	out := make([]float64, 0, len(mix))
+	for _, v := range mix {
+		switch t := v.(type) {
+		case float64:
+			out = append(out, t)
+		case json.Number:
+			f, err := t.Float64()
+			if err != nil {
+				return nil
+			}
+			out = append(out, f)
+		default:
+			return nil
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func subsampleIndices(n, maxPoints int) []int {
 	if n <= 0 {
 		return nil
@@ -222,15 +302,25 @@ func alignStreams(st *ActivityStreams) {
 		st.Time = nil
 		st.Altitude = nil
 		st.VelocitySmooth = nil
+		st.Heartrate = nil
 		return
 	}
 	st.LatLng = st.LatLng[:n]
 	st.Time = st.Time[:n]
-	if len(st.Altitude) > n {
-		st.Altitude = st.Altitude[:n]
+	if len(st.Altitude) > 0 {
+		st.Altitude = resampleFloat64Slice(st.Altitude, n)
+	} else {
+		st.Altitude = nil
 	}
-	if len(st.VelocitySmooth) > n {
-		st.VelocitySmooth = st.VelocitySmooth[:n]
+	if len(st.VelocitySmooth) > 0 {
+		st.VelocitySmooth = resampleFloat64Slice(st.VelocitySmooth, n)
+	} else {
+		st.VelocitySmooth = nil
+	}
+	if len(st.Heartrate) > 0 {
+		st.Heartrate = resampleFloat64Slice(st.Heartrate, n)
+	} else {
+		st.Heartrate = nil
 	}
 }
 
@@ -311,6 +401,13 @@ func BuildLiveRunDetailMap(act *DetailedActivity, st *ActivityStreams) map[strin
 			kmh := v * 3.6
 			if kmh > maxFromVelKmh && kmh < maxPlausibleSpeedKmh {
 				maxFromVelKmh = kmh
+			}
+		}
+		if ii < len(st.Heartrate) {
+			h := st.Heartrate[ii]
+			if h >= 30 && h <= 235 && !math.IsNaN(h) {
+				hb := h
+				tp.HrBpm = &hb
 			}
 		}
 		track = append(track, tp)

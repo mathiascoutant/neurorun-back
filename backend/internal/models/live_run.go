@@ -42,6 +42,7 @@ type LiveRunTrackPoint struct {
 	AltM       *float64 `bson:"alt_m,omitempty" json:"alt_m,omitempty"`
 	HeadingDeg *float64 `bson:"heading_deg,omitempty" json:"heading_deg,omitempty"`
 	SpeedMps   *float64 `bson:"speed_mps,omitempty" json:"speed_mps,omitempty"`
+	HrBpm      *float64 `bson:"hr_bpm,omitempty" json:"hr_bpm,omitempty"`
 }
 
 // LiveRun : session course en direct enregistrée depuis le front.
