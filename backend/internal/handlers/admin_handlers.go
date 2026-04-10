@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,9 +44,38 @@ func (h *Handlers) AdminStats(w http.ResponseWriter, r *http.Request) {
 
 	cfg, _ := h.db.GetOfferConfig(ctx)
 	cfg.MergeDefaults()
-	ps := cfg.PricesEUR["strava"]
-	pp := cfg.PricesEUR["performance"]
-	mrr := ps*float64(nStrava) + pp*float64(nPerf)
+
+	tierOrder := make([]string, 0, len(cfg.Tiers))
+	for tid := range cfg.Tiers {
+		tierOrder = append(tierOrder, tid)
+	}
+	sort.Strings(tierOrder)
+
+	usersByPlan := make(map[string]int64, len(tierOrder))
+	for _, tid := range tierOrder {
+		if tid == models.PlanStandard {
+			usersByPlan[tid] = nStd
+		} else {
+			n, _ := h.db.CountUsersByPlan(ctx, tid)
+			usersByPlan[tid] = n
+		}
+	}
+
+	mrr := 0.0
+	for tid, price := range cfg.PricesEUR {
+		if price <= 0 {
+			continue
+		}
+		n, ok := usersByPlan[tid]
+		if !ok {
+			if tid == models.PlanStandard {
+				n = nStd
+			} else {
+				n, _ = h.db.CountUsersByPlan(ctx, tid)
+			}
+		}
+		mrr += price * float64(n)
+	}
 
 	signups, _ := h.db.SignupsByDayUTC(ctx, 30)
 	top, _ := h.db.TopUsersByActivity(ctx, 10)
@@ -62,6 +92,9 @@ func (h *Handlers) AdminStats(w http.ResponseWriter, r *http.Request) {
 		"prices_eur":               cfg.PricesEUR,
 		"subscribers_strava":       nStrava,
 		"subscribers_performance":  nPerf,
+		"tier_order":               tierOrder,
+		"users_by_plan":            usersByPlan,
+		"tier_display_names":       cfg.TierDisplayNames,
 	})
 }
 

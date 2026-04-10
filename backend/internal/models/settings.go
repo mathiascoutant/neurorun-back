@@ -1,6 +1,8 @@
 package models
 
-// TierFeatures : interrupteurs par offre (standard / strava / performance), modifiables depuis l’admin.
+import "strings"
+
+// TierFeatures : interrupteurs par palier (standard, strava = offre produit « Allure », performance), modifiables depuis l’admin.
 type TierFeatures struct {
 	CoachChat       bool `json:"coach_chat" bson:"coach_chat"`
 	StravaDashboard bool `json:"strava_dashboard" bson:"strava_dashboard"`
@@ -14,8 +16,9 @@ type TierFeatures struct {
 
 // OfferConfig : document unique (clé fixe côté store) — prix + flags par palier.
 type OfferConfig struct {
-	Tiers     map[string]TierFeatures `json:"tiers" bson:"tiers"`
-	PricesEUR map[string]float64      `json:"prices_eur" bson:"prices_eur"`
+	Tiers             map[string]TierFeatures `json:"tiers" bson:"tiers"`
+	PricesEUR         map[string]float64      `json:"prices_eur" bson:"prices_eur"`
+	TierDisplayNames  map[string]string       `json:"tier_display_names" bson:"tier_display_names"`
 }
 
 // DefaultOfferConfig : valeurs par défaut si aucun document en base.
@@ -36,8 +39,13 @@ func DefaultOfferConfig() OfferConfig {
 			},
 		},
 		PricesEUR: map[string]float64{
-			"strava":      3.99,
-			"performance": 7.99,
+			PlanStrava:      3.99,
+			PlanPerformance: 7.99,
+		},
+		TierDisplayNames: map[string]string{
+			PlanStandard:    "standard",
+			PlanStrava:      "allure",
+			PlanPerformance: "performance",
 		},
 	}
 }
@@ -58,6 +66,14 @@ func (c *OfferConfig) MergeDefaults() {
 	for k, v := range def.PricesEUR {
 		if _, ok := c.PricesEUR[k]; !ok {
 			c.PricesEUR[k] = v
+		}
+	}
+	if c.TierDisplayNames == nil {
+		c.TierDisplayNames = make(map[string]string)
+	}
+	for k, v := range def.TierDisplayNames {
+		if cur, ok := c.TierDisplayNames[k]; !ok || strings.TrimSpace(cur) == "" {
+			c.TierDisplayNames[k] = v
 		}
 	}
 }

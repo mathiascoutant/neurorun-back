@@ -104,7 +104,7 @@ func (h *Handlers) CheckoutPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	b.Plan = strings.TrimSpace(strings.ToLower(b.Plan))
 	if b.Plan != models.PlanStrava && b.Plan != models.PlanPerformance {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan invalide (strava ou performance)"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan invalide (allure ou performance)"})
 		return
 	}
 	cfg, err := h.cachedOfferConfig(r.Context())
@@ -204,7 +204,7 @@ func (h *Handlers) PaidSignupPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	b.Plan = strings.TrimSpace(strings.ToLower(b.Plan))
 	if b.Plan != models.PlanStrava && b.Plan != models.PlanPerformance {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan invalide (strava ou performance)"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan invalide (allure ou performance)"})
 		return
 	}
 	cfg, err := h.cachedOfferConfig(r.Context())
