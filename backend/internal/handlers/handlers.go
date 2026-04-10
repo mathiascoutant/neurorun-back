@@ -149,6 +149,147 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type registerPaidBody struct {
+	Email         string `json:"email"`
+	Password      string `json:"password"`
+	FirstName     string `json:"first_name"`
+	LastName      string `json:"last_name"`
+	BirthDate     string `json:"birth_date"`
+	Gender        string `json:"gender"`
+	Plan          string `json:"plan"`
+	PromoCode     string `json:"promo_code"`
+	PaymentMethod string `json:"payment_method"`
+}
+
+// RegisterPaidSignup POST — public : crée le compte seulement après « paiement » côté client (à relier Stripe).
+// Même contrat que register + plan strava|performance + promo ; le compte n’existe pas tant que cet appel n’a pas réussi.
+func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
+	var b registerPaidBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	b.Email = strings.TrimSpace(strings.ToLower(b.Email))
+	b.FirstName = strings.TrimSpace(b.FirstName)
+	b.LastName = strings.TrimSpace(b.LastName)
+	b.BirthDate = strings.TrimSpace(b.BirthDate)
+	if b.Email == "" || len(b.Password) < 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email et mot de passe (8+ caractères) requis"})
+		return
+	}
+	if b.FirstName == "" || b.LastName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "prénom et nom requis"})
+		return
+	}
+	if utf8.RuneCountInString(b.FirstName) > 80 || utf8.RuneCountInString(b.LastName) > 80 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "prénom ou nom trop long"})
+		return
+	}
+	if b.BirthDate == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date de naissance requise"})
+		return
+	}
+	bd, err := time.Parse("2006-01-02", b.BirthDate)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date de naissance invalide (AAAA-MM-JJ)"})
+		return
+	}
+	bd = time.Date(bd.Year(), bd.Month(), bd.Day(), 0, 0, 0, 0, time.UTC)
+	today := time.Now().UTC()
+	todayDay := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
+	if bd.After(todayDay) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date de naissance dans le futur"})
+		return
+	}
+	if bd.Before(time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date de naissance invalide"})
+		return
+	}
+	b.BirthDate = bd.Format("2006-01-02")
+
+	g := strings.TrimSpace(strings.ToLower(b.Gender))
+	switch g {
+	case "", models.GenderUnspecified:
+		g = models.GenderUnspecified
+	case models.GenderFemale, models.GenderMale, models.GenderOther:
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sexe invalide"})
+		return
+	}
+
+	b.Plan = strings.TrimSpace(strings.ToLower(b.Plan))
+	if b.Plan != models.PlanStrava && b.Plan != models.PlanPerformance {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan payant invalide"})
+		return
+	}
+	b.PaymentMethod = strings.TrimSpace(strings.ToLower(b.PaymentMethod))
+	if b.PaymentMethod == "" {
+		b.PaymentMethod = "card"
+	}
+	if b.PaymentMethod != "card" && b.PaymentMethod != "apple_pay" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "moyen de paiement invalide"})
+		return
+	}
+
+	promo, err := h.validatePromo(r.Context(), b.PromoCode, b.Plan)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	hash, err := auth.HashPassword(b.Password)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur serveur"})
+		return
+	}
+
+	u, err := h.db.CreateUser(r.Context(), store.CreateUserInput{
+		Email:        b.Email,
+		PasswordHash: hash,
+		FirstName:    b.FirstName,
+		LastName:     b.LastName,
+		BirthDate:    b.BirthDate,
+		Gender:       g,
+		InitialPlan:  b.Plan,
+	})
+	if errors.Is(err, store.ErrDuplicateEmail) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "email déjà utilisé"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "inscription impossible"})
+		return
+	}
+
+	if h.cfg.AdminEmail != "" && strings.EqualFold(u.Email, h.cfg.AdminEmail) {
+		if err := h.db.UpdateUserRolePlan(r.Context(), u.ID, stringPtr(models.RoleAdmin), nil); err == nil {
+			u.Role = models.RoleAdmin
+		}
+	}
+
+	if promo != nil {
+		if err := h.db.IncrementPromoUse(r.Context(), promo.ID); err != nil {
+			_ = h.db.DeleteUserCascade(r.Context(), u.ID)
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "code promo plus disponible"})
+			return
+		}
+	}
+
+	h.invalidateOfferCache()
+
+	token, err := auth.SignJWT(u.ID.Hex(), h.cfg.JWTSecret, 7*24*time.Hour)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token"})
+		return
+	}
+
+	caps, _ := h.capabilitiesForUser(r.Context(), u)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"token": token,
+		"user":  userPublic(u, caps),
+	})
+}
+
 var registerEmailRx = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
 func registerEmailLooksValid(email string) bool {
@@ -1266,9 +1407,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func (h *Handlers) Mount(r chi.Router) {
 	r.Post("/auth/register/check-email", h.RegisterCheckEmail)
 	r.Post("/auth/register", h.Register)
+	r.Post("/auth/register-paid", h.RegisterPaidSignup)
 	r.Post("/auth/login", h.Login)
 	r.Get("/strava/callback", h.StravaCallback)
 	r.Get("/public/offer-config", h.PublicOfferConfig)
+	r.Post("/public/paid-signup/preview", h.PaidSignupPreview)
 
 	r.Route("/admin", func(ar chi.Router) {
 		ar.Use(h.AuthMiddleware)

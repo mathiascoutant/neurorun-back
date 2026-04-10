@@ -137,10 +137,16 @@ type CreateUserInput struct {
 	LastName     string
 	BirthDate    string // YYYY-MM-DD
 	Gender       string
+	// InitialPlan : vide ou standard → PlanStandard ; strava | performance pour inscription payante.
+	InitialPlan string
 }
 
 func (d *DB) CreateUser(ctx context.Context, in CreateUserInput) (*models.User, error) {
 	now := time.Now().UTC()
+	plan := models.PlanStandard
+	if in.InitialPlan == models.PlanStrava || in.InitialPlan == models.PlanPerformance {
+		plan = in.InitialPlan
+	}
 	u := models.User{
 		ID:           primitive.NewObjectID(),
 		Email:        in.Email,
@@ -150,7 +156,7 @@ func (d *DB) CreateUser(ctx context.Context, in CreateUserInput) (*models.User, 
 		BirthDate:    in.BirthDate,
 		Gender:       in.Gender,
 		Role:         models.RoleUser,
-		Plan:         models.PlanStandard,
+		Plan:         plan,
 		CreatedAt:    now,
 		LastSeenAt:   &now,
 	}

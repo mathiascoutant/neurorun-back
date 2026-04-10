@@ -26,8 +26,9 @@ func (h *Handlers) PublicOfferConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 type checkoutBody struct {
-	Plan     string `json:"plan"`
-	PromoCode string `json:"promo_code"`
+	Plan            string `json:"plan"`
+	PromoCode       string `json:"promo_code"`
+	PaymentMethod   string `json:"payment_method"` // card | apple_pay — réservé au futur flux Stripe ; aujourd’hui non bloquant.
 }
 
 func checkoutPriceEUR(cfg *models.OfferConfig, plan string) (float64, bool) {
@@ -152,6 +153,14 @@ func (h *Handlers) CheckoutSubscribe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan invalide"})
 		return
 	}
+	b.PaymentMethod = strings.TrimSpace(strings.ToLower(b.PaymentMethod))
+	if b.PaymentMethod == "" {
+		b.PaymentMethod = "card"
+	}
+	if b.PaymentMethod != "card" && b.PaymentMethod != "apple_pay" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "moyen de paiement invalide"})
+		return
+	}
 	promo, err := h.validatePromo(r.Context(), b.PromoCode, b.Plan)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -179,5 +188,49 @@ func (h *Handlers) CheckoutSubscribe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
 		"user": userPublic(refreshed, caps),
+	})
+}
+
+// PaidSignupPreview POST — public : prix (et promo) avant création de compte pour offre payante.
+func (h *Handlers) PaidSignupPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method"})
+		return
+	}
+	var b checkoutBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json invalide"})
+		return
+	}
+	b.Plan = strings.TrimSpace(strings.ToLower(b.Plan))
+	if b.Plan != models.PlanStrava && b.Plan != models.PlanPerformance {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan invalide (strava ou performance)"})
+		return
+	}
+	cfg, err := h.cachedOfferConfig(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
+		return
+	}
+	base, ok := checkoutPriceEUR(cfg, b.Plan)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "prix non défini pour ce plan"})
+		return
+	}
+	promo, err := h.validatePromo(r.Context(), b.PromoCode, b.Plan)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	pct := 0
+	if promo != nil {
+		pct = promo.PercentOff
+	}
+	final := applyPromoPercent(base, pct)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plan":             b.Plan,
+		"base_price_eur":   base,
+		"discount_percent": pct,
+		"final_price_eur":  final,
 	})
 }
