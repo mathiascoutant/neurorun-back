@@ -527,15 +527,6 @@ func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
 		writeFeatureForbidden(w, "Strava")
 		return
 	}
-	if !u.HasStrava() {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
-		return
-	}
-	access, err := h.ensureStravaAccess(r.Context(), u)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-		return
-	}
 
 	period := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("period")))
 	if period == "" {
@@ -565,12 +556,32 @@ func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runs, err := h.strava.FetchRunActivities(r.Context(), access, after)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-		return
+	var stravaRuns []strava.RunActivity
+	if u.HasStrava() {
+		access, aerr := h.ensureStravaAccess(r.Context(), u)
+		if aerr != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			return
+		}
+		var ferr error
+		stravaRuns, ferr = h.strava.FetchRunActivities(r.Context(), access, after)
+		if ferr != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			return
+		}
 	}
-	payload := strava.BuildDashboard(runs, period)
+
+	var liveAs []strava.RunActivity
+	liveOk, _ := h.userHasCapability(r.Context(), u, "live_runs")
+	if liveOk {
+		liveList, lerr := h.db.ListLiveRunsByUser(r.Context(), u.ID, 200)
+		if lerr == nil && len(liveList) > 0 {
+			liveAs = liveRunsToRunActivities(liveList, after)
+		}
+	}
+
+	combined := mergeStravaAndLiveRuns(stravaRuns, liveAs)
+	payload := strava.BuildDashboard(combined, period)
 	writeJSON(w, http.StatusOK, payload)
 }
 
