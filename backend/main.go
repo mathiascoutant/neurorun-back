@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -66,11 +67,18 @@ func main() {
 	})
 
 	// https://neurorun.fr/.well-known/apple-app-site-association (proxifié sur le même host que l’API si besoin).
-	r.Get("/.well-known/apple-app-site-association", func(w http.ResponseWriter, _ *http.Request) {
+	aasa := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(appleAppSiteAssociation))
-	})
+	}
+	aasaHead := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(appleAppSiteAssociation)))
+		w.WriteHeader(http.StatusOK)
+	}
+	r.Get("/.well-known/apple-app-site-association", aasa)
+	r.Head("/.well-known/apple-app-site-association", aasaHead)
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
