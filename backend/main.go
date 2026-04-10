@@ -24,6 +24,9 @@ import (
 // version est définie au build via -ldflags (Dockerfile).
 var version = "dev"
 
+// appleAppSiteAssociation : Apple Password AutoFill / webcredentials (Trousseau) pour fr.neurorun.app.
+const appleAppSiteAssociation = `{"webcredentials":{"apps":["4ND8JK3B5C.fr.neurorun.app"]}}`
+
 func main() {
 	log.Printf("runapp API version %s", version)
 
@@ -60,6 +63,13 @@ func main() {
 
 	r.Route("/api", func(sr chi.Router) {
 		h.Mount(sr)
+	})
+
+	// https://neurorun.fr/.well-known/apple-app-site-association (proxifié sur le même host que l’API si besoin).
+	r.Get("/.well-known/apple-app-site-association", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(appleAppSiteAssociation))
 	})
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
