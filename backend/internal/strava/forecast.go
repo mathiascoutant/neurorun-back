@@ -12,6 +12,22 @@ const (
 	raceHalfKm     = 21.0975
 	raceMarathonKm = 42.195
 	riegelPower    = 1.06
+
+	// Bornes de plausibilité pour une allure MOYENNE de sortie (min/km).
+	// En dessous de 2:30/km (≈24 km/h) sur une sortie entière = donnée GPS douteuse ;
+	// au-dessus de 20:00/km = ce n'est pas une course.
+	minSanePaceMinKm = 2.5
+	maxSanePaceMinKm = 20.0
+
+	// Percentile « bon jour » : allure de course réaliste tirée du haut du panier
+	// (0 = meilleure sortie absolue, 0.5 = médiane). On prend le fast-end sans coller
+	// à l'extrême pour ne pas se faire piéger par un pic GPS isolé.
+	bestEffortPct = 0.15
+
+	// Borne haute de l'exposant Riegel : l'extrapolation vers les longues distances
+	// (marathon depuis un 5/10 km) doit pénaliser davantage que le 1.06 classique,
+	// qui est trop optimiste sur marathon.
+	riegelMaxPower = 1.10
 )
 
 // RaceLegForecast est une prévision de performance pour une distance standard.
@@ -80,6 +96,44 @@ func medianFloat(xs []float64) float64 {
 	return (s[m-1] + s[m]) / 2
 }
 
+// bestEffortPace estime l'allure de course à partir du haut du panier (fast-end)
+// plutôt que de la médiane : c'est ce qu'on peut tenir un bon jour, pas l'allure
+// moyenne footings inclus. Robuste aux pics isolés grâce au percentile bestEffortPct.
+func bestEffortPace(paces []float64) float64 {
+	if len(paces) == 0 {
+		return 0
+	}
+	s := slices.Clone(paces)
+	slices.Sort(s) // croissant : le plus rapide (plus petite allure) d'abord
+	return percentile(s, bestEffortPct)
+}
+
+// riegelExponent adapte l'exposant de Riegel au sens et à l'ampleur de l'extrapolation.
+// Descente ou faible ratio : 1.06 (valeur classique, fiable). Montée vers plus long :
+// l'exposant grimpe avec le ratio de distances (le marathon depuis un 5/10 km doit être
+// pénalisé), borné à riegelMaxPower.
+func riegelExponent(dRef, dTarget float64) float64 {
+	if dTarget <= dRef || dRef <= 0 {
+		return riegelPower
+	}
+	exp := riegelPower + 0.01*math.Log2(dTarget/dRef)
+	if exp > riegelMaxPower {
+		return riegelMaxPower
+	}
+	return exp
+}
+
+// StandardDistanceKm renvoie la distance officielle précise d'une épreuve (5k/10k/half/marathon)
+// à partir de son id. Utilisée pour recalculer une allure sans l'erreur d'arrondi de DistanceKm.
+func StandardDistanceKm(id string) float64 {
+	for _, lm := range standardLegs {
+		if lm.id == id {
+			return lm.distKm
+		}
+	}
+	return 0
+}
+
 func percentile(sorted []float64, p float64) float64 {
 	if len(sorted) == 0 {
 		return 0
@@ -119,8 +173,9 @@ func hrBands(hrs []float64) (mid *float64, low *float64, high *float64) {
 	return &m, &lo, &hi
 }
 
-// BuildRaceForecast agrège l’historique Strava (toutes sorties dans runs) pour estimer
-// des temps sur 5 km, 10 km, semi et marathon (médiane d’allure par tranche + Riegel si besoin).
+// BuildRaceForecast agrège l’historique (Strava + courses NeuroRun) pour estimer des temps
+// sur 5 km, 10 km, semi et marathon : allure « meilleur effort » par tranche de distance,
+// puis extrapolation de Riegel (exposant adaptatif) pour les distances sans donnée directe.
 func BuildRaceForecast(runs []RunActivity) RaceForecastPayload {
 	bucketPaces := make([][]float64, 4)
 	bucketHRs := make([][]float64, 4)
@@ -138,7 +193,7 @@ func BuildRaceForecast(runs []RunActivity) RaceForecastPayload {
 			continue
 		}
 		p := paceMinPerKmFromSpeed(r.DistanceM, r.AvgSpeed)
-		if p <= 0 {
+		if p < minSanePaceMinKm || p > maxSanePaceMinKm {
 			continue
 		}
 		bucketPaces[bi] = append(bucketPaces[bi], p)
@@ -156,7 +211,7 @@ func BuildRaceForecast(runs []RunActivity) RaceForecastPayload {
 		if len(bucketPaces[i]) == 0 {
 			continue
 		}
-		mp := medianFloat(bucketPaces[i])
+		mp := bestEffortPace(bucketPaces[i])
 		if mp <= 0 {
 			continue
 		}
@@ -190,7 +245,7 @@ func BuildRaceForecast(runs []RunActivity) RaceForecastPayload {
 		}
 		tRef := directTime[bestJ]
 		dRef := distances[bestJ]
-		timeSec[i] = tRef * math.Pow(distances[i]/dRef+1e-9, riegelPower)
+		timeSec[i] = tRef * math.Pow(distances[i]/dRef, riegelExponent(dRef, distances[i]))
 		filledFrom[i] = bestJ
 	}
 
@@ -214,7 +269,7 @@ func BuildRaceForecast(runs []RunActivity) RaceForecastPayload {
 		}
 
 		paceSec := ts / lm.distKm
-		src := "bucket_median"
+		src := "best_effort"
 		refID := ""
 		if !hasDirect[i] {
 			src = "riegel_extrapolation"
@@ -242,9 +297,16 @@ func BuildRaceForecast(runs []RunActivity) RaceForecastPayload {
 		})
 	}
 
+	// Ne compter que les sorties réellement retenues (celles tombées dans une tranche
+	// standard), pas toutes les sorties récupérées.
+	usedRuns := 0
+	for _, c := range bucketRuns {
+		usedRuns += c
+	}
+
 	return RaceForecastPayload{
 		Legs:           legs,
-		RunsAnalyzed:   len(sorted),
+		RunsAnalyzed:   usedRuns,
 		GeneratedAtRFC: now,
 	}
 }

@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"runapp/internal/models"
 	"runapp/internal/strava"
@@ -107,8 +109,13 @@ func applyForecastFactors(base strava.RaceForecastPayload, f forecastFactorsJSON
 			b := legCopy.TimeSec
 			legCopy.BaselineTimeSec = &b
 			legCopy.TimeSec = math.Round(legCopy.TimeSec * fac)
-			if legCopy.DistanceKm > 0 {
-				legCopy.PaceSecPerKm = math.Round(legCopy.TimeSec / legCopy.DistanceKm)
+			// Distance officielle précise (21,0975 / 42,195…), pas l'arrondi d'affichage.
+			d := strava.StandardDistanceKm(legCopy.ID)
+			if d <= 0 {
+				d = legCopy.DistanceKm
+			}
+			if d > 0 {
+				legCopy.PaceSecPerKm = math.Round(legCopy.TimeSec / d)
 			}
 		}
 		out.Legs[i] = legCopy
@@ -125,20 +132,7 @@ func (h *Handlers) StravaRaceForecast(w http.ResponseWriter, r *http.Request) {
 	if !h.requireCapability(w, r, u, "forecast") {
 		return
 	}
-	if !u.HasStrava() {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
-		return
-	}
-	access, err := h.ensureStravaAccess(r.Context(), u)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-		return
-	}
-	runs, err := h.strava.FetchRunActivities(r.Context(), access, nil)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-		return
-	}
+	runs := h.gatherForecastRuns(r.Context(), u)
 	payload := strava.BuildRaceForecast(runs)
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -152,26 +146,13 @@ func (h *Handlers) StravaRaceForecastAdjust(w http.ResponseWriter, r *http.Reque
 	if !h.requireCapability(w, r, u, "forecast") {
 		return
 	}
-	if !u.HasStrava() {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "connectez Strava d'abord"})
-		return
-	}
 	var b forecastAdjustBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
 
-	access, err := h.ensureStravaAccess(r.Context(), u)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-		return
-	}
-	runs, err := h.strava.FetchRunActivities(r.Context(), access, nil)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-		return
-	}
+	runs := h.gatherForecastRuns(r.Context(), u)
 	base := strava.BuildRaceForecast(runs)
 
 	aiKey := strings.TrimSpace(h.cfg.OpenAIAPIKey) != ""
@@ -228,6 +209,98 @@ Reste réaliste : facteurs entre 0.9 et 1.18. rationale_fr : 1 à 2 phrases en f
 		"ai_used":      aiUsed,
 		"factors":      fac,
 	})
+}
+
+// gatherForecastRuns rassemble toutes les sorties exploitables pour la prévision :
+// activités Strava (si le compte est lié) + courses NeuroRun (montre/live), ces dernières
+// dédupliquées contre Strava. La prévision fonctionne donc même sans Strava.
+func (h *Handlers) gatherForecastRuns(ctx context.Context, u *models.User) []strava.RunActivity {
+	var runs []strava.RunActivity
+
+	if u.HasStrava() {
+		if access, err := h.ensureStravaAccess(ctx, u); err == nil {
+			if acts, err := h.strava.FetchRunActivities(ctx, access, nil); err == nil {
+				runs = append(runs, acts...)
+			}
+		}
+	}
+
+	if live, err := h.db.ListLiveRunsByUser(ctx, u.ID, 300); err == nil {
+		for i := range live {
+			ra, ok := liveRunToActivity(&live[i])
+			if !ok {
+				continue
+			}
+			if isDuplicateOfStrava(ra, runs) {
+				continue
+			}
+			runs = append(runs, ra)
+		}
+	}
+	return runs
+}
+
+// liveRunToActivity convertit une course NeuroRun en RunActivity (allure = temps de MOUVEMENT).
+func liveRunToActivity(lr *models.LiveRun) (strava.RunActivity, bool) {
+	if lr.DistanceM < 100 || lr.MovingSec <= 0 {
+		return strava.RunActivity{}, false
+	}
+	start := lr.CreatedAt
+	if lr.GpsStartTsMs > 0 {
+		start = time.UnixMilli(lr.GpsStartTsMs)
+	}
+	ra := strava.RunActivity{
+		Name:       "NeuroRun",
+		Type:       "Run",
+		StartAt:    start.UTC(),
+		DistanceM:  lr.DistanceM,
+		MovingSec:  int(math.Round(lr.MovingSec)),
+		ElapsedSec: int(math.Round(lr.WallSec)),
+		AvgSpeed:   lr.DistanceM / lr.MovingSec, // m/s
+	}
+	if hr := avgHRFromTrack(lr.TrackPoints); hr > 0 {
+		ra.AvgHR = &hr
+	}
+	return ra, true
+}
+
+func avgHRFromTrack(pts []models.LiveRunTrackPoint) float64 {
+	var sum float64
+	var n int
+	for _, p := range pts {
+		if p.HrBpm != nil && *p.HrBpm > 0 {
+			sum += *p.HrBpm
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / float64(n)
+}
+
+// isDuplicateOfStrava évite de compter deux fois une sortie présente à la fois côté montre
+// et côté Strava (départ à < 4 min et distance à < 10 %). Ne compare qu'aux activités Strava.
+func isDuplicateOfStrava(live strava.RunActivity, existing []strava.RunActivity) bool {
+	if live.DistanceM <= 0 {
+		return false
+	}
+	for _, e := range existing {
+		if e.ID == 0 { // 0 = course NeuroRun, pas une activité Strava
+			continue
+		}
+		dt := e.StartAt.Sub(live.StartAt)
+		if dt < 0 {
+			dt = -dt
+		}
+		if dt > 4*time.Minute {
+			continue
+		}
+		if math.Abs(e.DistanceM-live.DistanceM)/live.DistanceM < 0.1 {
+			return true
+		}
+	}
+	return false
 }
 
 func boolStr(v bool) string {
