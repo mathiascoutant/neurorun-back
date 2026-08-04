@@ -98,6 +98,15 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	_, _ = liveRuns.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
 	})
+	// Idempotence des envois montre : un même client_run_id ne peut être
+	// enregistré qu'une fois par utilisateur. Partiel, car les courses créées
+	// depuis le web n'en portent pas.
+	_, _ = liveRuns.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "client_run_id", Value: 1}},
+		Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+			bson.M{"client_run_id": bson.M{"$type": "string"}},
+		),
+	})
 	_, _ = promoCodes.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "code", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -484,7 +493,29 @@ func (d *DB) CreateLiveRun(ctx context.Context, run *models.LiveRun) error {
 		run.CreatedAt = time.Now().UTC()
 	}
 	_, err := d.liveRuns.InsertOne(ctx, run)
+	if mongo.IsDuplicateKeyError(err) {
+		return ErrDuplicateLiveRun
+	}
 	return err
+}
+
+// FindLiveRunByClientID retourne la course déjà enregistrée pour ce
+// client_run_id, ou ErrNotFound.
+func (d *DB) FindLiveRunByClientID(
+	ctx context.Context, userID primitive.ObjectID, clientRunID string,
+) (*models.LiveRun, error) {
+	var run models.LiveRun
+	err := d.liveRuns.FindOne(ctx, bson.M{
+		"user_id":       userID,
+		"client_run_id": clientRunID,
+	}).Decode(&run)
+	if err == mongo.ErrNoDocuments {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &run, nil
 }
 
 func (d *DB) ListLiveRunsByUser(ctx context.Context, userID primitive.ObjectID, limit int) ([]models.LiveRun, error) {

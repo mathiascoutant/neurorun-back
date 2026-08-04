@@ -51,6 +51,13 @@ type LiveRun struct {
 	UserID    primitive.ObjectID `bson:"user_id" json:"-"`
 	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
 
+	// ClientRunID : identifiant généré par le client (montre / app). Clé
+	// d'idempotence — index unique par utilisateur — pour qu'un réessai
+	// d'envoi ne crée jamais de doublon.
+	ClientRunID string `bson:"client_run_id,omitempty" json:"client_run_id,omitempty"`
+	// TrackTruncated : la trace reçue dépassait la limite et a été coupée.
+	TrackTruncated bool `bson:"track_truncated,omitempty" json:"track_truncated,omitempty"`
+
 	TargetKm   float64 `bson:"target_km" json:"target_km"`
 	DistanceM  float64 `bson:"distance_m" json:"distance_m"`
 	MovingSec  float64 `bson:"moving_sec" json:"moving_sec"`

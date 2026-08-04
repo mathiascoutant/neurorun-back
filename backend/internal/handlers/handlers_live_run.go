@@ -19,12 +19,16 @@ import (
 )
 
 const (
-	maxLiveRunTrackPoints = 3500
+	// ~5 h de course à 1 point/seconde. L'ancienne limite (3500) coupait la fin
+	// du tracé d'une course d'une heure, sans rien signaler.
+	maxLiveRunTrackPoints = 20000
 	maxLiveRunSplits      = 250
+	maxClientRunIDLen     = 64
 )
 
 type liveRunCreateBody struct {
-	TargetKm   float64 `json:"target_km"`
+	ClientRunID string  `json:"client_run_id"`
+	TargetKm    float64 `json:"target_km"`
 	DistanceM  float64 `json:"distance_m"`
 	MovingSec  float64 `json:"moving_sec"`
 	WallSec    float64 `json:"wall_sec"`
@@ -69,8 +73,28 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "trop de splits"})
 		return
 	}
+	truncated := false
 	if len(b.TrackPoints) > maxLiveRunTrackPoints {
 		b.TrackPoints = b.TrackPoints[:maxLiveRunTrackPoints]
+		truncated = true
+	}
+
+	clientRunID := strings.TrimSpace(b.ClientRunID)
+	if len(clientRunID) > maxClientRunIDLen {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "client_run_id invalide"})
+		return
+	}
+	// Renvoi du même identifiant : c'est un réessai, on rend la course déjà
+	// enregistrée au lieu d'en créer une seconde.
+	if clientRunID != "" {
+		if existing, err := h.db.FindLiveRunByClientID(r.Context(), u.ID, clientRunID); err == nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"id":         existing.ID.Hex(),
+				"created_at": existing.CreatedAt.Format(time.RFC3339),
+				"duplicate":  true,
+			})
+			return
+		}
 	}
 
 	avg := b.AvgPaceSecPerKm
@@ -80,6 +104,8 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 
 	run := models.LiveRun{
 		UserID:             u.ID,
+		ClientRunID:        clientRunID,
+		TrackTruncated:     truncated,
 		TargetKm:           b.TargetKm,
 		DistanceM:          b.DistanceM,
 		MovingSec:          b.MovingSec,
@@ -101,6 +127,18 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.CreateLiveRun(r.Context(), &run); err != nil {
+		// Course déjà enregistrée entre-temps (deux réessais simultanés) :
+		// l'index unique tranche, on renvoie l'existante.
+		if errors.Is(err, store.ErrDuplicateLiveRun) && clientRunID != "" {
+			if existing, ferr := h.db.FindLiveRunByClientID(r.Context(), u.ID, clientRunID); ferr == nil {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"id":         existing.ID.Hex(),
+					"created_at": existing.CreatedAt.Format(time.RFC3339),
+					"duplicate":  true,
+				})
+				return
+			}
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "enregistrement impossible"})
 		return
 	}
