@@ -109,6 +109,9 @@ func applyForecastFactors(base strava.RaceForecastPayload, f forecastFactorsJSON
 			b := legCopy.TimeSec
 			legCopy.BaselineTimeSec = &b
 			legCopy.TimeSec = math.Round(legCopy.TimeSec * fac)
+			// La fourchette suit le même facteur : sinon le temps ajusté sortirait de ses bornes.
+			legCopy.TimeLowSec = math.Round(legCopy.TimeLowSec * fac)
+			legCopy.TimeHighSec = math.Round(legCopy.TimeHighSec * fac)
 			// Distance officielle précise (21,0975 / 42,195…), pas l'arrondi d'affichage.
 			d := strava.StandardDistanceKm(legCopy.ID)
 			if d <= 0 {
