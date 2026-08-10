@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"runapp/internal/models"
@@ -41,6 +42,22 @@ func (h *Handlers) invalidateOfferCache() {
 	h.offerCache = nil
 	h.offerExpiry = time.Time{}
 	h.offerMu.Unlock()
+}
+
+// tierDisplayName : nom commercial de l’offre tel que configuré en admin (« allure » pour le plan
+// `strava`). Repli sur l’identifiant technique si la config est illisible ou le nom vide.
+func (h *Handlers) tierDisplayName(ctx context.Context, plan string) string {
+	if plan == "" {
+		plan = models.PlanStandard
+	}
+	cfg, err := h.cachedOfferConfig(ctx)
+	if err != nil {
+		return plan
+	}
+	if name := strings.TrimSpace(cfg.TierDisplayNames[plan]); name != "" {
+		return name
+	}
+	return plan
 }
 
 func (h *Handlers) capabilitiesForUser(ctx context.Context, u *models.User) (map[string]bool, error) {

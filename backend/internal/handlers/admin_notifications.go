@@ -29,19 +29,9 @@ func adminDisplayName(u *models.User) string {
 	return full
 }
 
-// planLabel : libellé d’offre en majuscules tel qu’affiché dans la notification (« PERFORMANCE »).
+// planLabel : libellé d’offre en majuscules tel qu’affiché dans la notification (« ALLURE »).
 func (h *Handlers) planLabel(ctx context.Context, plan string) string {
-	if plan == "" {
-		plan = models.PlanStandard
-	}
-	cfg, err := h.cachedOfferConfig(ctx)
-	if err != nil {
-		return strings.ToUpper(plan)
-	}
-	if name := strings.TrimSpace(cfg.TierDisplayNames[plan]); name != "" {
-		return strings.ToUpper(name)
-	}
-	return strings.ToUpper(plan)
+	return strings.ToUpper(h.tierDisplayName(ctx, plan))
 }
 
 // notifyAdminsSignup — nouveau compte, quelle que soit l’offre choisie à l’inscription.
@@ -116,7 +106,7 @@ func (h *Handlers) notifyAdmins(kind string, u *models.User, plan string) {
 }
 
 func adminNotificationText(kind, name, plan, label string) (title, body string) {
-	paid := plan == models.PlanStrava || plan == models.PlanPerformance
+	paid := isPaidPlan(plan)
 	switch {
 	case kind == models.AdminEventPlanActivated:
 		return "Nouvelle offre payante", name + " vient de prendre l’offre " + label

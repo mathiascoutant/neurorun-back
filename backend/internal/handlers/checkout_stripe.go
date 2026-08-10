@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"runapp/internal/models"
 	"runapp/internal/store"
@@ -56,16 +57,41 @@ func (h *Handlers) PublicPaymentConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// capitalizeFirst : « allure » → « Allure ». Sur les runes, les noms d’offre étant libres.
+func capitalizeFirst(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return s
+	}
+	return string(unicode.ToUpper(r[0])) + string(r[1:])
+}
+
+// stripeProductName : intitulé vu par le client sur la page Stripe (« S’abonner à … »). Il suit le
+// nom commercial défini en admin, pas l’identifiant technique du plan.
+func (h *Handlers) stripeProductName(ctx context.Context, plan string) string {
+	return "NeuroRun — offre " + capitalizeFirst(h.tierDisplayName(ctx, plan))
+}
+
 // stripeProductID : un produit Stripe par offre, créé à la volée avec un id déterministe
 // (les prix sont pilotés depuis l’admin, donc envoyés en `price_data` à chaque session).
-func (h *Handlers) stripeProductID(plan string) (string, error) {
+func (h *Handlers) stripeProductID(ctx context.Context, plan string) (string, error) {
 	id := "neurorun_" + plan
+	name := h.stripeProductName(ctx, plan)
 	if p, err := h.stripe.Products.Get(id, nil); err == nil && p != nil {
-		// Produit créé avant l’ajout du code fiscal : on le complète, sinon la session est refusée.
+		// Remise à niveau du produit déjà en place : nom renommé depuis l’admin, et code fiscal
+		// absent des produits créés avant son ajout (sans lui la session est refusée).
+		params := &stripe.ProductParams{}
+		stale := false
+		if p.Name != name {
+			params.Name = stripe.String(name)
+			stale = true
+		}
 		if p.TaxCode == nil || p.TaxCode.ID == "" {
-			if updated, uerr := h.stripe.Products.Update(id, &stripe.ProductParams{
-				TaxCode: stripe.String(stripeTaxCodeSaaS),
-			}); uerr == nil && updated != nil {
+			params.TaxCode = stripe.String(stripeTaxCodeSaaS)
+			stale = true
+		}
+		if stale {
+			if updated, uerr := h.stripe.Products.Update(id, params); uerr == nil && updated != nil {
 				return updated.ID, nil
 			}
 		}
@@ -73,7 +99,7 @@ func (h *Handlers) stripeProductID(plan string) (string, error) {
 	}
 	p, err := h.stripe.Products.New(&stripe.ProductParams{
 		ID:      stripe.String(id),
-		Name:    stripe.String("NeuroRun — offre " + plan),
+		Name:    stripe.String(name),
 		TaxCode: stripe.String(stripeTaxCodeSaaS),
 	})
 	if err != nil {
@@ -200,7 +226,7 @@ func (h *Handlers) CheckoutCreateSession(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "paiement indisponible pour le moment"})
 		return
 	}
-	productID, err := h.stripeProductID(b.Plan)
+	productID, err := h.stripeProductID(r.Context(), b.Plan)
 	if err != nil {
 		log.Printf("stripe product: %v", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "paiement indisponible pour le moment"})

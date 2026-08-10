@@ -56,6 +56,13 @@ func New(cfg *config.Config, db *store.DB) *Handlers {
 	return h
 }
 
+// isPaidPlan : vrai pour les offres facturées. Tolère la casse et les espaces, l’identifiant
+// pouvant venir d’un corps de requête.
+func isPaidPlan(plan string) bool {
+	p := strings.TrimSpace(strings.ToLower(plan))
+	return p == models.PlanStrava || p == models.PlanPerformance
+}
+
 type regBody struct {
 	Email     string `json:"email"`
 	Password  string `json:"password"`
@@ -63,6 +70,11 @@ type regBody struct {
 	LastName  string `json:"last_name"`
 	BirthDate string `json:"birth_date"`
 	Gender    string `json:"gender"`
+	// IntendedPlan : offre payante visée par le parcours (« strava », « performance »), envoyée
+	// par le front quand l’inscription mène au récap de paiement. Purement indicatif : le compte
+	// est créé en standard et n’ouvre aucun droit — le champ ne sert qu’à retarder la notification
+	// admin jusqu’à l’encaissement.
+	IntendedPlan string `json:"intended_plan"`
 }
 
 func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +166,12 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.notifyAdminsSignup(u)
+	// Parcours vers une offre payante : le compte seul n’est pas encore un client. La notification
+	// part à l’activation de l’offre (`notifyAdminsPlanActivated`, après encaissement Stripe ou
+	// promo 100 %) ; un abandon au récap ne notifie donc rien.
+	if !isPaidPlan(b.IntendedPlan) {
+		h.notifyAdminsSignup(u)
+	}
 
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
 	writeJSON(w, http.StatusCreated, map[string]any{
