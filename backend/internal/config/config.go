@@ -25,6 +25,15 @@ type Config struct {
 	OpenAIModel        string
 	// AdminEmail : à l’inscription, ce compte reçoit le rôle admin (comparaison insensible à la casse).
 	AdminEmail string
+	// Stripe : paiement réel des offres. Sans clé secrète, les endpoints de paiement répondent 503
+	// et seules les souscriptions à 0 € (promo 100 %) restent possibles.
+	StripeSecretKey      string
+	StripePublishableKey string
+	// StripeWebhookSecret : `whsec_...` — sans lui l’endpoint webhook refuse tout (signature non vérifiable).
+	StripeWebhookSecret string
+	// ExpoAccessToken : facultatif — requis seulement si « Enhanced Security for Push Notifications »
+	// est activé sur le compte Expo. Les notifications admin partent sans lui par défaut.
+	ExpoAccessToken string
 }
 
 func Load() (*Config, error) {
@@ -49,6 +58,12 @@ func Load() (*Config, error) {
 		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:        getenv("OPENAI_MODEL", "gpt-4o"),
 		AdminEmail:         strings.TrimSpace(strings.ToLower(os.Getenv("ADMIN_EMAIL"))),
+
+		StripeSecretKey:      strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
+		StripePublishableKey: strings.TrimSpace(os.Getenv("STRIPE_PUBLISHABLE_KEY")),
+		StripeWebhookSecret:  strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+
+		ExpoAccessToken: strings.TrimSpace(os.Getenv("EXPO_ACCESS_TOKEN")),
 	}
 	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
 		for _, o := range strings.Split(raw, ",") {
@@ -86,6 +101,11 @@ func Load() (*Config, error) {
 	}
 
 	return c, nil
+}
+
+// StripeConfigured indique si un vrai paiement peut être créé (clé secrète + clé publique).
+func (c *Config) StripeConfigured() bool {
+	return c.StripeSecretKey != "" && c.StripePublishableKey != ""
 }
 
 // StravaConfigured indique si l’OAuth Strava peut être utilisé (les trois variables doivent être renseignées).

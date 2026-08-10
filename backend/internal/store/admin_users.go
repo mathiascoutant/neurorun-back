@@ -121,6 +121,29 @@ func (d *DB) UpdateUserPlan(ctx context.Context, id primitive.ObjectID, plan str
 	return d.UpdateUserRolePlan(ctx, id, nil, &plan)
 }
 
+// SwitchUserPlan passe de `from` à `to` seulement si l’offre courante est bien `from`, et
+// renvoie true si c’est cet appel qui a fait la bascule. Sert à ne notifier qu’une fois quand
+// /checkout/confirm et le webhook Stripe traitent le même abonnement en parallèle.
+func (d *DB) SwitchUserPlan(ctx context.Context, id primitive.ObjectID, from, to string) (bool, error) {
+	filter := bson.M{"_id": id, "plan": from}
+	if from == models.PlanStandard {
+		// Les comptes créés en gratuit n’ont pas toujours le champ `plan` renseigné.
+		filter = bson.M{
+			"_id": id,
+			"$or": []bson.M{
+				{"plan": from},
+				{"plan": ""},
+				{"plan": bson.M{"$exists": false}},
+			},
+		}
+	}
+	res, err := d.users.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"plan": to}})
+	if err != nil {
+		return false, err
+	}
+	return res.ModifiedCount > 0, nil
+}
+
 func (d *DB) CountGoalsByUser(ctx context.Context, userID primitive.ObjectID) (int64, error) {
 	return d.goals.CountDocuments(ctx, bson.M{"user_id": userID})
 }
@@ -138,6 +161,9 @@ func (d *DB) DeleteUserCascade(ctx context.Context, id primitive.ObjectID) error
 		return err
 	}
 	if _, err := d.liveRuns.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
+		return err
+	}
+	if _, err := d.adminPushTokens.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
 		return err
 	}
 	res, err := d.users.DeleteOne(ctx, bson.M{"_id": id})

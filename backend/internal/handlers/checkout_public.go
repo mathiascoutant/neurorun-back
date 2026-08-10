@@ -28,7 +28,7 @@ func (h *Handlers) PublicOfferConfig(w http.ResponseWriter, r *http.Request) {
 type checkoutBody struct {
 	Plan            string `json:"plan"`
 	PromoCode       string `json:"promo_code"`
-	PaymentMethod   string `json:"payment_method"` // card | apple_pay — réservé au futur flux Stripe ; aujourd’hui non bloquant.
+	PaymentMethod   string `json:"payment_method"` // card | apple_pay — hérité ; le moyen de paiement réel est choisi dans le Payment Element Stripe.
 }
 
 func checkoutPriceEUR(cfg *models.OfferConfig, plan string) (float64, bool) {
@@ -136,7 +136,8 @@ func (h *Handlers) CheckoutPreview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// CheckoutSubscribe POST — enregistre le plan (paiement réel à brancher plus tard).
+// CheckoutSubscribe POST — active l’offre sans passer par Stripe. Réservé aux montants à 0 €
+// (promo 100 %) : tout montant à encaisser doit passer par /checkout/subscription + /checkout/confirm.
 func (h *Handlers) CheckoutSubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method"})
@@ -161,27 +162,19 @@ func (h *Handlers) CheckoutSubscribe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "moyen de paiement invalide"})
 		return
 	}
-	promo, err := h.validatePromo(r.Context(), b.PromoCode, b.Plan)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	amountCents, promo, ok := h.checkoutAmountCents(w, r, b.Plan, b.PromoCode)
+	if !ok {
 		return
 	}
-	prevPlan := u.EffectivePlan()
-	if err := h.db.UpdateUserPlan(r.Context(), u.ID, b.Plan); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
+	if amountCents > 0 {
+		writeJSON(w, http.StatusPaymentRequired, map[string]string{
+			"error": "paiement requis — passe par le paiement par carte pour activer cette offre",
+		})
 		return
 	}
-	if promo != nil {
-		if err := h.db.IncrementPromoUse(r.Context(), promo.ID); err != nil {
-			_ = h.db.UpdateUserPlan(r.Context(), u.ID, prevPlan)
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "code promo plus disponible"})
-			return
-		}
-	}
-	h.invalidateOfferCache()
-	refreshed, err := h.db.FindUserByID(r.Context(), u.ID)
+	refreshed, err := h.activateFreePlan(r.Context(), u, b.Plan, promo)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]string{"ok": "plan mis à jour"})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
 	caps, _ := h.capabilitiesForUser(r.Context(), refreshed)

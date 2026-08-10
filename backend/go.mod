@@ -1,12 +1,13 @@
 module runapp
 
-go 1.21
+go 1.22
 
 require (
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/go-chi/cors v1.2.1
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/joho/godotenv v1.5.1
+	github.com/stripe/stripe-go/v86 v86.2.0
 	go.mongodb.org/mongo-driver v1.13.1
 	golang.org/x/crypto v0.28.0
 	golang.org/x/text v0.19.0

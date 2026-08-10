@@ -35,6 +35,9 @@ type DB struct {
 	promoCodes    *mongo.Collection
 	circuits      *mongo.Collection
 	circuitTimes  *mongo.Collection
+	// adminNotifications / adminPushTokens : alertes inscriptions destinées aux comptes admin.
+	adminNotifications *mongo.Collection
+	adminPushTokens    *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -85,6 +88,8 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	promoCodes := database.Collection("promo_codes")
 	circuits := database.Collection("circuits")
 	circuitTimes := database.Collection("circuit_times")
+	adminNotifications := database.Collection("admin_notifications")
+	adminPushTokens := database.Collection("admin_push_tokens")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -120,6 +125,14 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	_, _ = circuitTimes.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "user_id", Value: 1}},
 	})
+	_, _ = adminNotifications.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "created_at", Value: -1}},
+	})
+	// Un appareil = un jeton Expo : le ré-enregistrement met à jour la même ligne.
+	_, _ = adminPushTokens.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "token", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
 	return &DB{
 		client:        client,
 		database:      database,
@@ -131,6 +144,9 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		promoCodes:    promoCodes,
 		circuits:      circuits,
 		circuitTimes:  circuitTimes,
+
+		adminNotifications: adminNotifications,
+		adminPushTokens:    adminPushTokens,
 	}, nil
 }
 

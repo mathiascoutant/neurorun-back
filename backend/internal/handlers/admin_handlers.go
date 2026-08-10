@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -227,6 +228,22 @@ func (h *Handlers) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if actor.ID == oid {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "impossible de supprimer ton propre compte"})
 		return
+	}
+	// Même règle que la suppression par l’utilisateur : on coupe l’abonnement avant d’effacer
+	// le compte, sinon Stripe continue de prélever sans qu’aucun compte n’y corresponde.
+	target, err := h.db.FindUserByID(r.Context(), oid)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "suppression"})
+		return
+	}
+	if target != nil {
+		if err := h.CancelSubscriptionForDeletedAccount(r.Context(), target); err != nil {
+			log.Printf("admin: suppression %s: annulation abonnement: %v", oid.Hex(), err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "abonnement Stripe non annulé — compte conservé, réessaie",
+			})
+			return
+		}
 	}
 	if err := h.db.DeleteUserCascade(r.Context(), oid); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

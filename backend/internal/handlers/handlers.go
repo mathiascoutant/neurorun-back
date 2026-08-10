@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"math"
 	"net/http"
 	"regexp"
@@ -17,10 +18,12 @@ import (
 	"runapp/internal/config"
 	"runapp/internal/models"
 	oai "runapp/internal/openai"
+	"runapp/internal/push"
 	"runapp/internal/store"
 	"runapp/internal/strava"
 
 	"github.com/go-chi/chi/v5"
+	stripeclient "github.com/stripe/stripe-go/v86/client"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -29,6 +32,10 @@ type Handlers struct {
 	db     *store.DB
 	strava *strava.Client
 	openai *oai.Client
+	// stripe : nil si les clés ne sont pas configurées (paiement carte désactivé).
+	stripe *stripeclient.API
+	// pushClient : notifications admin (inscriptions) via Expo Push.
+	pushClient *push.Client
 
 	offerMu     sync.RWMutex
 	offerCache  *models.OfferConfig
@@ -36,12 +43,17 @@ type Handlers struct {
 }
 
 func New(cfg *config.Config, db *store.DB) *Handlers {
-	return &Handlers{
-		cfg:    cfg,
-		db:     db,
-		strava: strava.New(cfg.StravaClientID, cfg.StravaClientSecret),
-		openai: oai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel),
+	h := &Handlers{
+		cfg:        cfg,
+		db:         db,
+		strava:     strava.New(cfg.StravaClientID, cfg.StravaClientSecret),
+		openai:     oai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel),
+		pushClient: push.New(cfg.ExpoAccessToken),
 	}
+	if cfg.StripeConfigured() {
+		h.stripe = stripeclient.New(cfg.StripeSecretKey, nil)
+	}
+	return h
 }
 
 type regBody struct {
@@ -142,6 +154,8 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.notifyAdminsSignup(u)
+
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"token": token,
@@ -231,9 +245,16 @@ func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	promo, err := h.validatePromo(r.Context(), b.PromoCode, b.Plan)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	// Endpoint public : il ne peut donc pas encaisser. Une offre payante s’active après
+	// création du compte via /checkout/subscription (Stripe) ; ici seuls les 0 € passent.
+	amountCents, promo, ok := h.checkoutAmountCents(w, r, b.Plan, b.PromoCode)
+	if !ok {
+		return
+	}
+	if amountCents > 0 {
+		writeJSON(w, http.StatusPaymentRequired, map[string]string{
+			"error": "paiement requis — crée le compte puis règle l’offre par carte",
+		})
 		return
 	}
 
@@ -282,6 +303,8 @@ func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token"})
 		return
 	}
+
+	h.notifyAdminsSignup(u)
 
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -507,6 +530,15 @@ func (h *Handlers) DeleteMyAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if !auth.CheckPassword(u.PasswordHash, b.Password) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "mot de passe incorrect"})
+		return
+	}
+	// Avant d’effacer le compte : couper l’abonnement, sinon Stripe continuerait de prélever
+	// une personne qui n’a plus de compte — et plus rien ne permettrait de faire le lien.
+	if err := h.CancelSubscriptionForDeletedAccount(r.Context(), u); err != nil {
+		log.Printf("suppression compte %s: annulation abonnement: %v", u.ID.Hex(), err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "impossible d’arrêter ton abonnement pour le moment — réessaie dans quelques instants",
+		})
 		return
 	}
 	if err := h.db.DeleteUserCascade(r.Context(), u.ID); err != nil {
@@ -1422,7 +1454,9 @@ func (h *Handlers) Mount(r chi.Router) {
 	r.Post("/auth/login", h.Login)
 	r.Get("/strava/callback", h.StravaCallback)
 	r.Get("/public/offer-config", h.PublicOfferConfig)
+	r.Get("/public/payment-config", h.PublicPaymentConfig)
 	r.Post("/public/paid-signup/preview", h.PaidSignupPreview)
+	r.Post("/stripe/webhook", h.StripeWebhook)
 
 	r.Route("/admin", func(ar chi.Router) {
 		ar.Use(h.AuthMiddleware)
@@ -1438,6 +1472,11 @@ func (h *Handlers) Mount(r chi.Router) {
 		ar.Delete("/promo-codes/{id}", h.AdminDeletePromo)
 		ar.Get("/offer-config", h.AdminGetOfferConfig)
 		ar.Put("/offer-config", h.AdminPutOfferConfig)
+		ar.Get("/notifications", h.AdminListNotifications)
+		ar.Post("/notifications/read", h.AdminMarkNotificationsRead)
+		ar.Post("/notifications/test", h.AdminSendTestNotification)
+		ar.Post("/push-token", h.AdminRegisterPushToken)
+		ar.Delete("/push-token", h.AdminDeletePushToken)
 		ar.Get("/circuits", h.AdminListCircuits)
 		ar.Get("/circuit-times/search", h.AdminSearchCircuitTimesByUser)
 		ar.Get("/circuits/{id}/times", h.AdminListCircuitTimes)
@@ -1449,6 +1488,11 @@ func (h *Handlers) Mount(r chi.Router) {
 	r.Group(func(pr chi.Router) {
 		pr.Use(h.AuthMiddleware)
 		pr.Post("/checkout/preview", h.CheckoutPreview)
+		pr.Post("/checkout/session", h.CheckoutCreateSession)
+		pr.Post("/checkout/confirm", h.CheckoutConfirm)
+		pr.Get("/billing/subscription", h.BillingSubscription)
+		pr.Post("/billing/cancel", h.BillingCancel)
+		pr.Post("/billing/resume", h.BillingResume)
 		pr.Post("/checkout/subscribe", h.CheckoutSubscribe)
 		pr.Get("/me", h.Me)
 		pr.Patch("/me", h.PatchMe)
