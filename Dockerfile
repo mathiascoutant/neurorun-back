@@ -4,7 +4,7 @@ ARG APP_VERSION=0.0.0
 # vers MongoDB Atlas depuis certains hôtes Docker.
 # Le comportement TLS vers Atlas tient au driver mongo (v1.13.1, figé dans go.mod) et au runtime
 # Debian, pas à la version du compilateur : ce tag doit juste suivre la directive `go` de go.mod.
-FROM golang:1.22-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
