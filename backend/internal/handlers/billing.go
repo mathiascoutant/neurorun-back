@@ -9,6 +9,7 @@ import (
 
 	"runapp/internal/models"
 
+	appstoreapi "github.com/awa/go-iap/appstore/api"
 	"github.com/stripe/stripe-go/v86"
 )
 
@@ -29,7 +30,12 @@ type billingInvoice struct {
 type billingState struct {
 	Plan            string `json:"plan"`
 	HasSubscription bool   `json:"has_subscription"`
-	// Status : statut Stripe brut (active, past_due, canceled…). Vide sans abonnement.
+	// Provider : qui encaisse (stripe | apple). Vide sans abonnement.
+	Provider string `json:"provider,omitempty"`
+	// ManagedExternally : l’abonnement ne peut être ni résilié ni repris depuis NeuroRun. C’est le
+	// cas des achats App Store, qui se gèrent uniquement dans les réglages iOS.
+	ManagedExternally bool `json:"managed_externally"`
+	// Status : statut brut du fournisseur (active, past_due, canceled…). Vide sans abonnement.
 	Status      string `json:"status,omitempty"`
 	AmountCents int64  `json:"amount_cents,omitempty"`
 	Currency    string `json:"currency,omitempty"`
@@ -41,14 +47,21 @@ type billingState struct {
 	Invoices          []billingInvoice `json:"invoices"`
 }
 
-// billingStateFor relit l’abonnement chez Stripe (source de vérité), resynchronise le plan local
-// au passage — filet de sécurité si un webhook s’est perdu — puis compose l’état affiché au compte.
+// billingStateFor relit l’abonnement chez son fournisseur (source de vérité), resynchronise le plan
+// local au passage — filet de sécurité si un webhook s’est perdu — puis compose l’état affiché au
+// compte.
 func (h *Handlers) billingStateFor(r *http.Request, u *models.User) (*billingState, *models.User, error) {
 	state := &billingState{
 		Plan:     u.EffectivePlan(),
 		Invoices: []billingInvoice{},
 	}
-	if u.Billing == nil || u.Billing.StripeSubscriptionID == "" || !h.stripeEnabled() {
+	if u.Billing == nil {
+		return state, u, nil
+	}
+	if u.Billing.EffectiveProvider() == models.BillingProviderApple {
+		return h.appleBillingStateFor(r, u, state)
+	}
+	if u.Billing.StripeSubscriptionID == "" || !h.stripeEnabled() {
 		return state, u, nil
 	}
 
@@ -71,6 +84,7 @@ func (h *Handlers) billingStateFor(r *http.Request, u *models.User) (*billingSta
 	}
 
 	state.Plan = refreshed.EffectivePlan()
+	state.Provider = models.BillingProviderStripe
 	state.Status = string(sub.Status)
 	state.AmountCents = subscriptionAmountCents(sub)
 	state.Currency = "eur"
@@ -89,6 +103,51 @@ func (h *Handlers) billingStateFor(r *http.Request, u *models.User) (*billingSta
 
 	if u.Billing.StripeCustomerID != "" {
 		state.Invoices = h.listBillingInvoices(u.Billing.StripeCustomerID, sub.ID)
+	}
+	return state, refreshed, nil
+}
+
+// appleBillingStateFor compose l’état d’un abonnement App Store. Deux différences avec Stripe :
+// l’historique des paiements n’est pas exposé par l’App Store Server API (le client le retrouve
+// dans son compte Apple), et la résiliation ne peut pas être déclenchée par le serveur.
+func (h *Handlers) appleBillingStateFor(
+	r *http.Request,
+	u *models.User,
+	state *billingState,
+) (*billingState, *models.User, error) {
+	state.Provider = models.BillingProviderApple
+	state.ManagedExternally = true
+
+	refreshed := u
+	if h.appleEnabled() && u.Billing.AppleOriginalTransactionID != "" {
+		if updated, err := h.refreshAppleSubscription(r.Context(), u, u.Billing.AppleOriginalTransactionID); err == nil {
+			refreshed = updated
+		} else {
+			// Apple injoignable : on affiche l’état local plutôt que de casser l’espace compte.
+			log.Printf("billing: abonnement Apple %s illisible: %v", u.Billing.AppleOriginalTransactionID, err)
+		}
+	}
+	state.Plan = refreshed.EffectivePlan()
+
+	b := refreshed.Billing
+	if b == nil || b.AppleOriginalTransactionID == "" {
+		return state, refreshed, nil
+	}
+	state.Status = b.Status
+	state.AmountCents = b.AmountCents
+	state.Currency = "eur"
+	state.CancelAtPeriodEnd = b.CancelAtPeriodEnd
+	state.HasSubscription = b.Status == appleStatusActive ||
+		b.Status == appleStatusBillingRetry ||
+		b.Status == appleStatusGracePeriod
+
+	if b.CurrentPeriodEnd != nil {
+		t := *b.CurrentPeriodEnd
+		if b.CancelAtPeriodEnd || !state.HasSubscription {
+			state.EndsAt = &t
+		} else {
+			state.NextPaymentAt = &t
+		}
 	}
 	return state, refreshed, nil
 }
@@ -135,7 +194,19 @@ func (h *Handlers) listBillingInvoices(customerID, subscriptionID string) []bill
 // Le client Stripe, lui, est conservé : les factures déjà émises relèvent des obligations
 // comptables. Il est seulement marqué comme rattaché à un compte supprimé.
 func (h *Handlers) CancelSubscriptionForDeletedAccount(ctx context.Context, u *models.User) error {
-	if !h.stripeEnabled() || u == nil || u.Billing == nil {
+	if u == nil || u.Billing == nil {
+		return nil
+	}
+	// Abonnement App Store : le serveur ne peut pas le résilier, Apple ne l’autorise pas. Supprimer
+	// le compte laisserait Apple prélever quelqu’un qui n’a plus rien chez nous et que plus rien ne
+	// relie à cet abonnement. On bloque donc la suppression tant qu’il court.
+	if u.Billing.EffectiveProvider() == models.BillingProviderApple {
+		if h.appleSubscriptionStillRunning(ctx, u) {
+			return errAppleSubscriptionActive
+		}
+		return nil
+	}
+	if !h.stripeEnabled() {
 		return nil
 	}
 	if subID := u.Billing.StripeSubscriptionID; subID != "" {
@@ -164,6 +235,36 @@ func (h *Handlers) CancelSubscriptionForDeletedAccount(ctx context.Context, u *m
 		}
 	}
 	return nil
+}
+
+// errAppleSubscriptionActive : suppression de compte refusée, un abonnement App Store court encore.
+var errAppleSubscriptionActive = errors.New("abonnement App Store encore actif")
+
+// appleSubscriptionStillRunning : vrai tant qu’Apple peut encore prélever. On interroge Apple plutôt
+// que de se fier au statut stocké, qui peut dater d’une notification perdue.
+func (h *Handlers) appleSubscriptionStillRunning(ctx context.Context, u *models.User) bool {
+	txID := u.Billing.AppleOriginalTransactionID
+	if txID == "" {
+		return false
+	}
+	if !h.appleEnabled() {
+		// Sans clés Apple, impossible de vérifier : on refuse la suppression par précaution.
+		return true
+	}
+	statuses, err := h.apple.GetALLSubscriptionStatuses(ctx, txID, nil)
+	if err != nil {
+		log.Printf("billing: statut Apple %s illisible: %v", txID, err)
+		return true
+	}
+	item, found := lastTransactionFor(statuses, txID)
+	if !found {
+		return false
+	}
+	switch item.Status {
+	case appstoreapi.SubscriptionExpired, appstoreapi.SubscriptionRevoked:
+		return false
+	}
+	return true
 }
 
 func isStripeResourceMissing(err error) bool {
@@ -207,11 +308,19 @@ func (h *Handlers) BillingResume(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) setCancelAtPeriodEnd(w http.ResponseWriter, r *http.Request, cancel bool) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+	// Apple interdit à un tiers de résilier un abonnement qu’il a vendu : seul le titulaire peut le
+	// faire depuis les réglages iOS. On le dit explicitement plutôt que d’échouer en 502.
+	if u.Billing != nil && u.Billing.EffectiveProvider() == models.BillingProviderApple {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "abonnement souscrit via l’App Store — gère-le depuis Réglages > ton nom > Abonnements sur ton iPhone",
+		})
+		return
+	}
 	if !h.stripeEnabled() {
 		writeStripeUnavailable(w)
 		return
 	}
-	u := r.Context().Value(ctxUser{}).(*models.User)
 	if u.Billing == nil || u.Billing.StripeSubscriptionID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "aucun abonnement en cours"})
 		return

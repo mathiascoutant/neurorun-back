@@ -22,6 +22,7 @@ import (
 	"runapp/internal/store"
 	"runapp/internal/strava"
 
+	appstoreapi "github.com/awa/go-iap/appstore/api"
 	"github.com/go-chi/chi/v5"
 	stripeclient "github.com/stripe/stripe-go/v86/client"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -34,6 +35,8 @@ type Handlers struct {
 	openai *oai.Client
 	// stripe : nil si les clés ne sont pas configurées (paiement carte désactivé).
 	stripe *stripeclient.API
+	// apple : App Store Server API — vérification des achats intégrés iOS. nil si non configuré.
+	apple *appstoreapi.StoreClient
 	// pushClient : notifications admin (inscriptions) via Expo Push.
 	pushClient *push.Client
 
@@ -52,6 +55,15 @@ func New(cfg *config.Config, db *store.DB) *Handlers {
 	}
 	if cfg.StripeConfigured() {
 		h.stripe = stripeclient.New(cfg.StripeSecretKey, nil)
+	}
+	if cfg.AppleIAPConfigured() {
+		h.apple = appstoreapi.NewStoreClient(&appstoreapi.StoreConfig{
+			KeyContent: cfg.AppleKeyP8,
+			KeyID:      cfg.AppleKeyID,
+			BundleID:   cfg.AppleBundleID,
+			Issuer:     cfg.AppleIssuerID,
+			Sandbox:    cfg.AppleSandbox,
+		})
 	}
 	return h
 }
@@ -553,6 +565,13 @@ func (h *Handlers) DeleteMyAccount(w http.ResponseWriter, r *http.Request) {
 	// une personne qui n’a plus de compte — et plus rien ne permettrait de faire le lien.
 	if err := h.CancelSubscriptionForDeletedAccount(r.Context(), u); err != nil {
 		log.Printf("suppression compte %s: annulation abonnement: %v", u.ID.Hex(), err)
+		// Abonnement App Store : réessayer ne changera rien, seul l’utilisateur peut le résilier.
+		if errors.Is(err, errAppleSubscriptionActive) {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "résilie d’abord ton abonnement dans Réglages > ton nom > Abonnements sur ton iPhone, puis reviens supprimer ton compte",
+			})
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "impossible d’arrêter ton abonnement pour le moment — réessaie dans quelques instants",
 		})
@@ -1472,8 +1491,11 @@ func (h *Handlers) Mount(r chi.Router) {
 	r.Get("/strava/callback", h.StravaCallback)
 	r.Get("/public/offer-config", h.PublicOfferConfig)
 	r.Get("/public/payment-config", h.PublicPaymentConfig)
+	r.Get("/public/apple-iap-config", h.AppleIAPConfig)
 	r.Post("/public/paid-signup/preview", h.PaidSignupPreview)
 	r.Post("/stripe/webhook", h.StripeWebhook)
+	// App Store Server Notifications V2 : appelé par Apple, jamais par un client authentifié.
+	r.Post("/apple/notifications", h.AppleNotifications)
 
 	r.Route("/admin", func(ar chi.Router) {
 		ar.Use(h.AuthMiddleware)
@@ -1507,6 +1529,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/checkout/preview", h.CheckoutPreview)
 		pr.Post("/checkout/session", h.CheckoutCreateSession)
 		pr.Post("/checkout/confirm", h.CheckoutConfirm)
+		pr.Post("/checkout/apple/verify", h.AppleCheckoutVerify)
 		pr.Get("/billing/subscription", h.BillingSubscription)
 		pr.Post("/billing/cancel", h.BillingCancel)
 		pr.Post("/billing/resume", h.BillingResume)

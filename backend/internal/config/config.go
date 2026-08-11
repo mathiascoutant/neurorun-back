@@ -34,6 +34,24 @@ type Config struct {
 	// ExpoAccessToken : facultatif — requis seulement si « Enhanced Security for Push Notifications »
 	// est activé sur le compte Expo. Les notifications admin partent sans lui par défaut.
 	ExpoAccessToken string
+
+	// Apple In-App Purchase : encaissement des offres depuis l’app iOS (règle App Store 3.1.1, qui
+	// interdit Stripe pour du contenu numérique consommé dans l’app). Stripe reste le circuit du web.
+	// Sans ces clés, /checkout/apple/* répond 503 et seul le web peut vendre.
+	AppleBundleID string
+	// AppleIssuerID / AppleKeyID / AppleKeyP8 : clé « In-App Purchase » de App Store Connect
+	// (Users and Access → Integrations → In-App Purchase). Elle signe les appels App Store Server API.
+	AppleIssuerID string
+	AppleKeyID    string
+	// AppleKeyP8 : contenu PEM du .p8. Accepte les retours ligne échappés en \n (pratique en variable
+	// d’environnement Docker, qui ne supporte pas le multiligne).
+	AppleKeyP8 []byte
+	// AppleSandbox : true en développement (achats via compte sandbox App Store Connect).
+	AppleSandbox bool
+	// AppleProductAllure / AppleProductPerformance : identifiants produit déclarés dans App Store
+	// Connect. Ce sont eux qui portent le prix côté iOS — l’admin NeuroRun ne pilote que le web.
+	AppleProductAllure      string
+	AppleProductPerformance string
 }
 
 func Load() (*Config, error) {
@@ -64,6 +82,14 @@ func Load() (*Config, error) {
 		StripeWebhookSecret:  strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
 
 		ExpoAccessToken: strings.TrimSpace(os.Getenv("EXPO_ACCESS_TOKEN")),
+
+		AppleBundleID:           strings.TrimSpace(os.Getenv("APPLE_BUNDLE_ID")),
+		AppleIssuerID:           strings.TrimSpace(os.Getenv("APPLE_IAP_ISSUER_ID")),
+		AppleKeyID:              strings.TrimSpace(os.Getenv("APPLE_IAP_KEY_ID")),
+		AppleKeyP8:              applePrivateKey(os.Getenv("APPLE_IAP_KEY_P8")),
+		AppleSandbox:            envBool("APPLE_IAP_SANDBOX"),
+		AppleProductAllure:      getenv("APPLE_PRODUCT_ALLURE", "fr.neurorun.app.sub.allure"),
+		AppleProductPerformance: getenv("APPLE_PRODUCT_PERFORMANCE", "fr.neurorun.app.sub.performance"),
 	}
 	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
 		for _, o := range strings.Split(raw, ",") {
@@ -106,6 +132,28 @@ func Load() (*Config, error) {
 // StripeConfigured indique si un vrai paiement peut être créé (clé secrète + clé publique).
 func (c *Config) StripeConfigured() bool {
 	return c.StripeSecretKey != "" && c.StripePublishableKey != ""
+}
+
+// AppleIAPConfigured indique si les achats intégrés iOS peuvent être vérifiés côté serveur.
+func (c *Config) AppleIAPConfigured() bool {
+	return c.AppleBundleID != "" && c.AppleIssuerID != "" && c.AppleKeyID != "" && len(c.AppleKeyP8) > 0
+}
+
+// AppleProductIDs mappe chaque offre payante vers son identifiant produit App Store Connect.
+func (c *Config) AppleProductIDs() map[string]string {
+	return map[string]string{
+		"strava":      c.AppleProductAllure,
+		"performance": c.AppleProductPerformance,
+	}
+}
+
+// applePrivateKey accepte le .p8 tel quel ou avec ses retours ligne échappés en « \n ».
+func applePrivateKey(raw string) []byte {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	return []byte(strings.ReplaceAll(raw, `\n`, "\n"))
 }
 
 // StravaConfigured indique si l’OAuth Strava peut être utilisé (les trois variables doivent être renseignées).

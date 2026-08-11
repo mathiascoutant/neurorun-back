@@ -492,6 +492,7 @@ func (h *Handlers) applySubscriptionState(
 	plan string,
 ) (*models.User, error) {
 	billing := models.Billing{
+		Provider:             models.BillingProviderStripe,
 		StripeSubscriptionID: sub.ID,
 		Status:               string(sub.Status),
 		Plan:                 plan,

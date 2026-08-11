@@ -15,6 +15,17 @@ type DashboardWeek struct {
 	Runs      int      `json:"runs"`
 }
 
+// DashboardDay agrège une journée (UTC). Sur une période courte — 7 jours — la
+// maille hebdomadaire ne produit qu'une ou deux barres : seul le détail par jour
+// est lisible.
+type DashboardDay struct {
+	Date  string   `json:"date"`
+	Km    float64  `json:"km"`
+	Hours float64  `json:"hours"`
+	AvgHR *float64 `json:"avg_hr,omitempty"`
+	Runs  int      `json:"runs"`
+}
+
 // DashboardPacePoint est une sortie pour courbe d’allure (tranches de distance).
 type DashboardPacePoint struct {
 	Date         string  `json:"date"`
@@ -29,6 +40,7 @@ type DashboardPayload struct {
 	TotalKm      float64              `json:"total_km"`
 	TotalHours   float64              `json:"total_hours"`
 	Weekly       []DashboardWeek      `json:"weekly"`
+	Daily        []DashboardDay       `json:"daily"`
 	Pace5k       []DashboardPacePoint `json:"pace_5k"`
 	Pace10k      []DashboardPacePoint `json:"pace_10k"`
 	PaceHalf     []DashboardPacePoint `json:"pace_half"`
@@ -43,12 +55,47 @@ func weekStartUTC(t time.Time) time.Time {
 	return d.AddDate(0, 0, -daysSinceMon)
 }
 
+func dayStartUTC(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
 type weekAgg struct {
 	km         float64
 	sec        int64
 	weightedHR float64
 	hrSec      int64
 	runs       int
+}
+
+// add cumule une sortie dans un seau (semaine ou jour).
+func (a *weekAgg) add(r RunActivity) {
+	a.km += r.DistanceM / 1000
+	a.sec += int64(r.MovingSec)
+	a.runs++
+	if r.AvgHR != nil && *r.AvgHR > 0 && r.MovingSec > 0 {
+		a.weightedHR += *r.AvgHR * float64(r.MovingSec)
+		a.hrSec += int64(r.MovingSec)
+	}
+}
+
+// avgHR renvoie la FC moyenne pondérée par le temps de mouvement, ou nil.
+func (a *weekAgg) avgHR() *float64 {
+	if a.hrSec <= 0 {
+		return nil
+	}
+	v := math.Round((a.weightedHR/float64(a.hrSec))*10) / 10
+	return &v
+}
+
+// sortedKeys renvoie les clés d'un index de seaux, triées par date croissante.
+func sortedKeys(m map[string]*weekAgg) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // BuildDashboard agrège les courses (ordre quelconque) pour l’API.
@@ -62,48 +109,46 @@ func BuildDashboard(runs []RunActivity, periodKey string) DashboardPayload {
 	})
 
 	weeks := make(map[string]*weekAgg)
+	days := make(map[string]*weekAgg)
 	var totalKm, totalHours float64
 	for _, r := range sorted {
-		km := r.DistanceM / 1000
-		totalKm += km
+		totalKm += r.DistanceM / 1000
 		totalHours += float64(r.MovingSec) / 3600
 
 		ws := weekStartUTC(r.StartAt).Format("2006-01-02")
-		wa, ok := weeks[ws]
-		if !ok {
-			wa = &weekAgg{}
-			weeks[ws] = wa
+		if weeks[ws] == nil {
+			weeks[ws] = &weekAgg{}
 		}
-		wa.km += km
-		wa.sec += int64(r.MovingSec)
-		wa.runs++
-		if r.AvgHR != nil && *r.AvgHR > 0 && r.MovingSec > 0 {
-			wa.weightedHR += *r.AvgHR * float64(r.MovingSec)
-			wa.hrSec += int64(r.MovingSec)
+		weeks[ws].add(r)
+
+		ds := dayStartUTC(r.StartAt).Format("2006-01-02")
+		if days[ds] == nil {
+			days[ds] = &weekAgg{}
 		}
+		days[ds].add(r)
 	}
 
-	weekKeys := make([]string, 0, len(weeks))
-	for k := range weeks {
-		weekKeys = append(weekKeys, k)
-	}
-	slices.Sort(weekKeys)
-
-	weekly := make([]DashboardWeek, 0, len(weekKeys))
-	for _, k := range weekKeys {
+	weekly := make([]DashboardWeek, 0, len(weeks))
+	for _, k := range sortedKeys(weeks) {
 		wa := weeks[k]
-		var hr *float64
-		if wa.hrSec > 0 {
-			v := wa.weightedHR / float64(wa.hrSec)
-			v = math.Round(v*10) / 10
-			hr = &v
-		}
 		weekly = append(weekly, DashboardWeek{
 			WeekStart: k,
 			Km:        round2(wa.km),
 			Hours:     round2(float64(wa.sec) / 3600),
-			AvgHR:     hr,
+			AvgHR:     wa.avgHR(),
 			Runs:      wa.runs,
+		})
+	}
+
+	daily := make([]DashboardDay, 0, len(days))
+	for _, k := range sortedKeys(days) {
+		da := days[k]
+		daily = append(daily, DashboardDay{
+			Date:  k,
+			Km:    round2(da.km),
+			Hours: round2(float64(da.sec) / 3600),
+			AvgHR: da.avgHR(),
+			Runs:  da.runs,
 		})
 	}
 
@@ -137,6 +182,7 @@ func BuildDashboard(runs []RunActivity, periodKey string) DashboardPayload {
 		TotalKm:      round2(totalKm),
 		TotalHours:   round2(totalHours),
 		Weekly:       weekly,
+		Daily:        daily,
 		Pace5k:       p5,
 		Pace10k:      p10,
 		PaceHalf:     ph,
