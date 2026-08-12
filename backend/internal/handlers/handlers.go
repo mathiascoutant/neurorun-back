@@ -628,13 +628,13 @@ func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
 	if u.HasStrava() {
 		access, aerr := h.ensureStravaAccess(r.Context(), u)
 		if aerr != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			h.writeStravaError(w, r, u, aerr, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
 		var ferr error
 		stravaRuns, ferr = h.strava.FetchRunActivities(r.Context(), access, after)
 		if ferr != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			h.writeStravaError(w, r, u, ferr, "erreur Strava")
 			return
 		}
 	}
@@ -752,6 +752,44 @@ func (h *Handlers) ensureStravaAccess(ctx context.Context, u *models.User) (stri
 	return tok, nil
 }
 
+// writeStravaError répond à un échec Strava en distinguant deux situations que le
+// client doit traiter différemment.
+//
+// Autorisation révoquée (depuis le compte Strava ou la page des applications) : les
+// jetons ne vaudront plus jamais rien. On les efface — sinon l'appli continue de se
+// croire liée et chaque écran retombe sur la même erreur — et on renvoie un code que
+// le front traduit en invitation à réassocier, pas en panne.
+//
+// Tout le reste (quota, 5xx, réseau) est passager : réessayer a du sens.
+func (h *Handlers) writeStravaError(w http.ResponseWriter, r *http.Request, u *models.User, err error, fallbackMsg string) {
+	if errors.Is(err, strava.ErrUnauthorized) {
+		if cerr := h.db.ClearStravaTokens(r.Context(), u.ID); cerr == nil {
+			u.Strava = nil
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "l’accès à Strava a été révoqué : réassocie ton compte pour retrouver tes données",
+			"code":  stravaUnlinkedCode,
+		})
+		return
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]string{"error": fallbackMsg})
+}
+
+// stravaUnlinkedCode : lu par le client pour afficher l'écran de liaison Strava.
+const stravaUnlinkedCode = "strava_unlinked"
+
+// forgetStravaIfRevoked efface l'association sur les chemins qui se contentent de
+// continuer sans Strava (historique, prévision) : eux n'ont rien à répondre, mais
+// l'état doit devenir « non lié » partout dès qu'on l'apprend.
+func (h *Handlers) forgetStravaIfRevoked(ctx context.Context, u *models.User, err error) {
+	if err == nil || !errors.Is(err, strava.ErrUnauthorized) {
+		return
+	}
+	if cerr := h.db.ClearStravaTokens(ctx, u.ID); cerr == nil {
+		u.Strava = nil
+	}
+}
+
 const chatHistoryMaxTurns = 24 // tours stockés envoyés au modèle (user+assistant)
 
 type chatBody struct {
@@ -767,6 +805,17 @@ type goalBody struct {
 }
 
 // validateGoalPayload lit et valide le corps JSON d'un objectif. errHTTP==0 si OK.
+// goalWelcomeTurn ouvre le fil du coach à la création d'un objectif.
+func goalWelcomeTurn() models.ChatTurn {
+	return models.ChatTurn{
+		Role: "assistant",
+		Text: "Salut — je suis là pour t’accompagner sur cet objectif, à ton rythme.\n\n" +
+			"Comment tu te sens en ce moment (énergie, sommeil, stress) ? As-tu des douleurs ou une zone du corps qui t’inquiète ?\n\n" +
+			"Écris-moi après tes sorties si tu veux : on pourra alléger, ajuster le chrono ou le délai ensemble, sans pression.",
+		CreatedAt: time.Now().UTC(),
+	}
+}
+
 func validateGoalPayload(r *http.Request) (b goalBody, label string, distKm float64, targetTime string, errHTTP int, errMsg string) {
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		return goalBody{}, "", 0, "", http.StatusBadRequest, "invalid json"
@@ -982,12 +1031,12 @@ func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 	if u.HasStrava() {
 		access, err := h.ensureStravaAccess(r.Context(), u)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
 		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 25)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			h.writeStravaError(w, r, u, err, "erreur Strava")
 			return
 		}
 		actsJSON, _ := json.Marshal(acts)
@@ -1164,12 +1213,12 @@ Donne uniquement le verdict et la justification demandés.`
 	if u.HasStrava() {
 		access, err := h.ensureStravaAccess(r.Context(), u)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
 		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			h.writeStravaError(w, r, u, err, "erreur Strava")
 			return
 		}
 		actsJSON, _ := json.Marshal(acts)
@@ -1245,12 +1294,12 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 	if hasStravaData {
 		access, err := h.ensureStravaAccess(r.Context(), u)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
 		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			h.writeStravaError(w, r, u, err, "erreur Strava")
 			return
 		}
 		actsJSON, _ = json.Marshal(acts)
@@ -1258,20 +1307,13 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 		actsJSON = []byte("[]")
 	}
 
-	plan, planned, err := h.synthesizeTrainingPlan(r.Context(), actsJSON, label, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData)
+	plan, planned, err := h.synthesizeTrainingPlan(r.Context(), actsJSON, label, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
 	}
 
-	now := time.Now().UTC()
-	welcome := models.ChatTurn{
-		Role: "assistant",
-		Text: "Salut — je suis là pour t’accompagner sur cet objectif, à ton rythme.\n\n" +
-			"Comment tu te sens en ce moment (énergie, sommeil, stress) ? As-tu des douleurs ou une zone du corps qui t’inquiète ?\n\n" +
-			"Écris-moi après tes sorties si tu veux : on pourra alléger, ajuster le chrono ou le délai ensemble, sans pression.",
-		CreatedAt: now,
-	}
+	welcome := goalWelcomeTurn()
 
 	g := &models.Goal{
 		UserID:                u.ID,
@@ -1292,25 +1334,31 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, g)
 }
 
-const goalCoachMaxTurns = 20
-
-type goalChatBody struct {
-	Message string `json:"message"`
-}
-
-func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
+// ReplanGoalWithStrava régénère le plan d'un objectif à partir des sorties Strava.
+//
+// Un objectif créé sans compte associé produit un plan bâti sur la seule intention
+// déclarée, avec ses réserves écrites en dur (« sans historique importé »). Associer
+// Strava ensuite ne le change pas : le plan est un texte figé en base. Cette route
+// le réécrit avec les activités réelles, et lève le marqueur correspondant.
+func (h *Handlers) ReplanGoalWithStrava(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
 	if !h.requireCapability(w, r, u, "goals") {
 		return
 	}
+	if !u.HasStrava() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "strava non lié"})
+		return
+	}
+	if strings.TrimSpace(h.cfg.OpenAIAPIKey) == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "génération indisponible"})
+		return
+	}
 
-	idHex := chi.URLParam(r, "id")
-	gid, err := primitive.ObjectIDFromHex(idHex)
+	gid, err := primitive.ObjectIDFromHex(chi.URLParam(r, "id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
 		return
 	}
-
 	g, err := h.db.GetGoalByUser(r.Context(), u.ID, gid)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
@@ -1321,122 +1369,42 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var b goalChatBody
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+	access, err := h.ensureStravaAccess(r.Context(), u)
+	if err != nil {
+		h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 		return
 	}
-	b.Message = strings.TrimSpace(b.Message)
-	if b.Message == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message vide"})
+	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+	if err != nil {
+		h.writeStravaError(w, r, u, err, "erreur Strava")
 		return
 	}
+	actsJSON, _ := json.Marshal(acts)
 
-	hasStravaData := u.HasStrava()
-	var actsJSON []byte
-	if hasStravaData {
-		access, err := h.ensureStravaAccess(r.Context(), u)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
-			return
-		}
-		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
-			return
-		}
-		actsJSON, _ = json.Marshal(acts)
-	} else {
-		actsJSON = []byte("[]")
-	}
-
-	aiIntent := h.extractGoalAdjustIntent(r.Context(), b.Message, g)
-	mergedIntent := mergeGoalAdjustIntent(aiIntent, heuristicGoalAdjust(b.Message, g))
-	spw, weeks, target := mergedGoalParams(g, mergedIntent)
-	calOff := calendarOffsetsFor(spw, mergedIntent.AvoidWednesday)
-	if spw != g.SessionsPerWeek || weeks != g.Weeks || target != strings.TrimSpace(g.TargetTime) {
-		mergedIntent.Replan = true
-	}
-	if structuralCalendarChange(g, calOff) {
-		mergedIntent.Replan = true
-	}
-	if needsPersistedReplan(g, mergedIntent, spw, weeks, target, calOff) && strings.TrimSpace(h.cfg.OpenAIAPIKey) != "" {
-		plan, planned, genErr := h.synthesizeTrainingPlan(r.Context(), actsJSON, g.DistanceLabel, target, weeks, spw, hasStravaData)
-		if genErr == nil {
-			upErr := h.db.UpdateGoalTrainingFields(r.Context(), u.ID, gid, plan, planned, weeks, spw, target, calOff, !hasStravaData)
-			if upErr == nil {
-				refreshed, refErr := h.db.GetGoalByUser(r.Context(), u.ID, gid)
-				if refErr == nil {
-					g = refreshed
-				}
-			}
-		}
-	}
-
-	planCtx := g.Plan
-	const planMax = 3200
-	if len(planCtx) > planMax {
-		planCtx = planCtx[:planMax] + "\n… (suite du plan omise pour le contexte)"
-	}
-
-	activitiesBlock := "**Activités récentes (JSON)**\n" + string(actsJSON)
-	if !hasStravaData {
-		activitiesBlock = "**Historique Strava** : non importé — base tes réponses sur l’objectif et le plan ci-dessus. Tu peux mentionner qu’associer Strava permet d’aligner les conseils sur le volume et l’allure réels, sans insister."
-	}
-
-	system := `Tu es un·e coach course à pied bienveillant·e. Tu écris en français.
-
-**Style et inclusion**
-- TUTOIEMENT par défaut ; si la personne se vouvoie (« je vous », etc.), passe au vouvoiement sans en faire tout un plat.
-- Inclusi·f·ve : pas de stéréotypes de genre, de corps ou de « niveau habituel » ; reste neutre et respectueu·x·se.
-- Accueille toutes les réalités (retour à la course, santé variable, manque de temps).
-
-**Rôle**
-Tu discutes de L'OBJECTIF enregistré (distance, chrono, semaines, séances/semaine) et de son plan. Les valeurs affichées dans **Objectif enregistré** sont à jour : si la personne vient de demander moins de séances ou un autre calendrier, le serveur a peut‑être déjà régénéré et enregistré un **nouveau plan** — confirme clairement ce qui a changé (ex. nombre de séances, répartition) en **2–4 phrases**, sans recopier tout le Markdown du plan.
-
-**Ressenti et santé**
-- Demande ou rebondis sur : fatigue, sommeil, stress, humeur, douleurs ou gênes.
-- Tu ne diagnostiques pas. Si douleur forte, persistante ou inquiétante : encourage à consulter un·e professionnel·le de santé.
-
-**Forme des réponses**
-3 à 8 phrases en général, ou quelques puces courtes. Si tu détailles une séance ou un ajustement, donne des **allures min/km** et des **temps par répétition** quand c’est du fractionné.
-
-**Objectif enregistré**
-- Distance : ` + g.DistanceLabel + `
-- Chrono visé : ` + g.TargetTime + `
-- Délai : ` + strconv.Itoa(g.Weeks) + ` semaine(s)
-- Séances / semaine : ` + strconv.Itoa(g.SessionsPerWeek) + `
-
-**Plan (référence)**
-` + planCtx + `
-
-` + activitiesBlock
-
-	msgs := []oai.ChatMessage{{Role: "system", Content: system}}
-	hist := g.CoachThread
-	if len(hist) > goalCoachMaxTurns {
-		hist = hist[len(hist)-goalCoachMaxTurns:]
-	}
-	for _, t := range hist {
-		if t.Role != "user" && t.Role != "assistant" {
-			continue
-		}
-		msgs = append(msgs, oai.ChatMessage{Role: t.Role, Content: t.Text})
-	}
-	msgs = append(msgs, oai.ChatMessage{Role: "user", Content: b.Message})
-
-	reply, err := h.openai.ChatMessages(r.Context(), msgs)
+	plan, planned, err := h.synthesizeTrainingPlan(
+		r.Context(), actsJSON, g.DistanceLabel, g.TargetTime, g.Weeks, g.SessionsPerWeek, true, nil,
+	)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
 	}
 
-	if err := h.db.AppendGoalCoachTurns(r.Context(), u.ID, gid, b.Message, reply); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde"})
+	// Seul le plan change : l'objectif, le rythme et les jours choisis sont ceux
+	// que la personne a fixés, ce n'est pas à une régénération de les redéfinir.
+	if err := h.db.UpdateGoalTrainingFields(
+		r.Context(), u.ID, gid, plan, planned,
+		g.Weeks, g.SessionsPerWeek, g.TargetTime, g.CalendarDayOffsets, false,
+	); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde du plan"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
+	refreshed, err := h.db.GetGoalByUser(r.Context(), u.ID, gid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur"})
+		return
+	}
+	writeJSON(w, http.StatusOK, refreshed)
 }
 
 type ctxUser struct{}
@@ -1548,8 +1516,11 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Delete("/conversations/{id}", h.DeleteConversation)
 		pr.Post("/goals/feasibility", h.GoalFeasibility)
 		pr.Post("/goals", h.CreateGoal)
+		pr.Post("/goals/stream", h.CreateGoalStream)
 		pr.Get("/goals", h.ListGoals)
 		pr.Post("/goals/{id}/chat", h.GoalChat)
+		pr.Post("/goals/{id}/replan", h.ReplanGoalWithStrava)
+		pr.Post("/goals/{id}/replan/stream", h.ReplanGoalWithStravaStream)
 		pr.Delete("/goals/{id}", h.DeleteGoal)
 		pr.Get("/goals/{id}/calendar", h.GoalCalendar)
 		pr.Patch("/goals/{id}", h.PatchGoal)

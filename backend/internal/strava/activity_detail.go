@@ -23,9 +23,11 @@ const (
 
 // DetailedActivity est le sous-ensemble du modèle Strava « Detailed Activity » utile au détail course.
 type DetailedActivity struct {
-	ID                 int64   `json:"id"`
-	Name               string  `json:"name"`
-	Type               string  `json:"type"`
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// WorkoutType qualifie la séance côté Strava : 3 = séance (fractionné).
+	WorkoutType        int     `json:"workout_type"`
 	StartDate          string  `json:"start_date"`
 	Distance           float64 `json:"distance"`
 	MovingTime         int     `json:"moving_time"`
@@ -74,7 +76,7 @@ func (c *Client) FetchActivityDetail(ctx context.Context, accessToken string, ac
 		return nil, fmt.Errorf("strava activity %d: not found", activityID)
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("strava activity %d: %s: %s", activityID, resp.Status, string(body))
+		return nil, apiError(fmt.Sprintf("strava activity %d", activityID), resp, body)
 	}
 	var act DetailedActivity
 	if err := json.Unmarshal(body, &act); err != nil {
@@ -108,7 +110,7 @@ func (c *Client) FetchActivityStreams(ctx context.Context, accessToken string, a
 		return &ActivityStreams{}, nil
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("strava streams %d: %s: %s", activityID, resp.Status, string(body))
+		return nil, apiError(fmt.Sprintf("strava streams %d", activityID), resp, body)
 	}
 	var raw []struct {
 		Type string          `json:"type"`
@@ -325,7 +327,8 @@ func alignStreams(st *ActivityStreams) {
 }
 
 // BuildLiveRunDetailMap construit une charge utile au même format que GET /api/live-runs/:id (JSON).
-func BuildLiveRunDetailMap(act *DetailedActivity, st *ActivityStreams) map[string]any {
+// `laps` est facultatif : il sert au découpage effort / récupération d'un fractionné.
+func BuildLiveRunDetailMap(act *DetailedActivity, st *ActivityStreams, laps []Lap) map[string]any {
 	if st == nil {
 		st = &ActivityStreams{}
 	}
@@ -484,7 +487,18 @@ func BuildLiveRunDetailMap(act *DetailedActivity, st *ActivityStreams) map[strin
 		"strava_activity_id":    act.ID,
 		"activity_name":         act.Name,
 		"activity_type":         act.Type,
+		"workout_type":          act.WorkoutType,
 	}
+
+	// Sur un fractionné, l'allure moyenne mélange efforts et récupérations : on
+	// fournit en plus l'allure des seuls efforts, la seule qui décrit la séance.
+	if IsIntervalWorkout(act.WorkoutType, act.Name) {
+		out["is_interval"] = true
+		if summary := DetectIntervalSummary(laps, st, splits); summary != nil {
+			out["interval_summary"] = summary
+		}
+	}
+
 	if act.HasHeartrate && act.AverageHeartrate > 0 {
 		out["avg_heartrate"] = act.AverageHeartrate
 	}

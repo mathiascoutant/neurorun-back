@@ -14,9 +14,11 @@ const dashboardPerPage = 200
 
 // RunActivity est une sortie course Strava parsée pour le dashboard.
 type RunActivity struct {
-	ID          int64
-	Name        string
-	Type        string
+	ID   int64
+	Name string
+	Type string
+	// WorkoutType qualifie la séance côté Strava : 3 = séance (fractionné).
+	WorkoutType int
 	StartAt     time.Time
 	DistanceM   float64
 	MovingSec   int
@@ -61,7 +63,7 @@ func (c *Client) FetchRunActivities(ctx context.Context, accessToken string, aft
 			return nil, err
 		}
 		if resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("strava activities page %d: %s: %s", page, resp.Status, string(body))
+			return nil, apiError(fmt.Sprintf("strava activities page %d", page), resp, body)
 		}
 
 		var raw []map[string]any
@@ -124,7 +126,7 @@ func (c *Client) FetchRunActivitiesBefore(ctx context.Context, accessToken strin
 			return nil, err
 		}
 		if resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("strava activities before page %d: %s: %s", page, resp.Status, string(body))
+			return nil, apiError(fmt.Sprintf("strava activities before page %d", page), resp, body)
 		}
 
 		var raw []map[string]any
@@ -189,6 +191,7 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 		ID:          id,
 		Name:        name,
 		Type:        typ,
+		WorkoutType: int(jsonFloat(m["workout_type"])),
 		StartAt:     st.UTC(),
 		DistanceM:   dist,
 		MovingSec:   mov,

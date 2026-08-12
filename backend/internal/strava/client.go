@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -19,6 +20,34 @@ const (
 	tokenURL     = "https://www.strava.com/oauth/token"
 	apiBase      = "https://www.strava.com/api/v3"
 )
+
+// ErrUnauthorized : Strava refuse ces jetons — accès révoqué depuis le compte Strava,
+// application désautorisée ou jeton de rafraîchissement invalidé. À la différence d'une
+// panne, réessayer n'y changera rien : il faut réassocier le compte.
+var ErrUnauthorized = errors.New("strava: autorisation révoquée")
+
+// apiError qualifie une réponse Strava en échec. Un 401 signe une autorisation qui
+// n'existe plus ; le reste (429, 5xx, coupure) est passager et reste une simple erreur.
+func apiError(what string, resp *http.Response, body []byte) error {
+	err := fmt.Errorf("%s: %s: %s", what, resp.Status, string(body))
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("%w (%v)", ErrUnauthorized, err)
+	}
+	return err
+}
+
+// tokenError qualifie un échec de l'endpoint OAuth. Une autorisation révoquée s'y
+// présente aussi en 400, avec un code `invalid` sur le champ refresh_token.
+func tokenError(what string, resp *http.Response, body []byte) error {
+	err := fmt.Errorf("%s: %s: %s", what, resp.Status, string(body))
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("%w (%v)", ErrUnauthorized, err)
+	}
+	if resp.StatusCode == http.StatusBadRequest && bytes.Contains(bytes.ToLower(body), []byte("invalid")) {
+		return fmt.Errorf("%w (%v)", ErrUnauthorized, err)
+	}
+	return err
+}
 
 type Client struct {
 	ClientID     string
@@ -76,7 +105,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code, redirectURI string) (mo
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return models.StravaTokens{}, fmt.Errorf("strava token exchange: %s: %s", resp.Status, string(body))
+		return models.StravaTokens{}, tokenError("strava token exchange", resp, body)
 	}
 
 	var tr tokenResponse
@@ -114,7 +143,7 @@ func (c *Client) Refresh(ctx context.Context, refresh string) (models.StravaToke
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return models.StravaTokens{}, fmt.Errorf("strava refresh: %s: %s", resp.Status, string(body))
+		return models.StravaTokens{}, tokenError("strava refresh", resp, body)
 	}
 
 	var tr tokenResponse
@@ -154,7 +183,7 @@ func (c *Client) ActivitiesSummary(ctx context.Context, accessToken string, perP
 		return nil, err
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("strava activities: %s: %s", resp.Status, string(body))
+		return nil, apiError("strava activities", resp, body)
 	}
 
 	var raw []map[string]any

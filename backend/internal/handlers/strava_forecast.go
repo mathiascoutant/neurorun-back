@@ -221,11 +221,15 @@ func (h *Handlers) gatherForecastRuns(ctx context.Context, u *models.User) []str
 	var runs []strava.RunActivity
 
 	if u.HasStrava() {
-		if access, err := h.ensureStravaAccess(ctx, u); err == nil {
-			if acts, err := h.strava.FetchRunActivities(ctx, access, nil); err == nil {
+		access, err := h.ensureStravaAccess(ctx, u)
+		if err == nil {
+			var acts []strava.RunActivity
+			acts, err = h.strava.FetchRunActivities(ctx, access, nil)
+			if err == nil {
 				runs = append(runs, acts...)
 			}
 		}
+		h.forgetStravaIfRevoked(ctx, u, err)
 	}
 
 	if live, err := h.db.ListLiveRunsByUser(ctx, u.ID, 300); err == nil {

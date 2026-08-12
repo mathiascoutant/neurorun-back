@@ -2,6 +2,7 @@ package strava
 
 import (
 	"math"
+	"slices"
 	"testing"
 	"time"
 )
@@ -225,5 +226,62 @@ func TestHeartRateOnlyFromDirectEvidence(t *testing.T) {
 	}
 	if legByID(p, "marathon").TargetHR != nil {
 		t.Fatal("le marathon ne doit pas recopier la FC d'un 10 km")
+	}
+}
+
+// mkIntervalRun crée une séance à intervalles : `paceMinKm` est sa moyenne, qui
+// additionne efforts et récupérations et ne mesure donc aucune allure tenue.
+func mkIntervalRun(daysAgo, km, paceMinKm float64) RunActivity {
+	r := mkRun(daysAgo, km, paceMinKm)
+	r.Name = "Fractionné"
+	r.WorkoutType = WorkoutTypeRunWorkout
+	return r
+}
+
+// Une séance à intervalles ne doit pas peser sur la projection : sa moyenne est
+// lente par construction, alors qu'elle prouve le contraire d'une baisse de forme.
+func TestIntervalRunsExcludedFromForecast(t *testing.T) {
+	var base []RunActivity
+	for i := 0; i < 10; i++ {
+		base = append(base, mkRun(float64(4+i*10), 10, 4.75+0.05*float64(i)))
+	}
+	withIntervals := append(slices.Clone(base), []RunActivity{
+		mkIntervalRun(6, 8, 6.05),
+		mkIntervalRun(13, 8, 6.10),
+		mkIntervalRun(20, 7.7, 6.05),
+		mkIntervalRun(27, 8.2, 6.00),
+		mkIntervalRun(34, 8, 6.15),
+		mkIntervalRun(41, 7.5, 6.05),
+	}...)
+
+	ref := legByID(buildRaceForecastAt(base, refNow), "10k")
+	got := legByID(buildRaceForecastAt(withIntervals, refNow), "10k")
+
+	if ref.TimeSec <= 0 {
+		t.Fatal("projection de référence vide")
+	}
+	if math.Abs(got.TimeSec-ref.TimeSec) > 1 {
+		t.Fatalf(
+			"projection 10k = %.0f s avec les fractionnés, %.0f s sans : écart de %.0f s",
+			got.TimeSec, ref.TimeSec, got.TimeSec-ref.TimeSec,
+		)
+	}
+	if got.SampleRuns != ref.SampleRuns {
+		t.Fatalf("SampleRuns = %d, attendu %d : les fractionnés comptent encore", got.SampleRuns, ref.SampleRuns)
+	}
+}
+
+// Le volume couru en fractionné reste une preuve d'endurance : l'écarter du calcul
+// d'allure ne doit pas faire retomber le garde-fou sortie longue.
+func TestIntervalRunsStillCountAsDistanceCovered(t *testing.T) {
+	runs := []RunActivity{
+		mkRun(5, 10, 5.0),
+		mkRun(12, 10, 5.1),
+		mkRun(19, 10, 5.05),
+		mkIntervalRun(9, 18, 6.2),
+	}
+	p := buildRaceForecastAt(runs, refNow)
+	if math.Abs(p.LongestRunKm-18) > 0.01 {
+		t.Fatalf("LongestRunKm = %.2f, attendu 18 (le fractionné a bien été couru)", p.LongestRunKm)
 	}
 }

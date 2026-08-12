@@ -234,6 +234,7 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 				stravaIncluded = true
 			}
 		}
+		h.forgetStravaIfRevoked(r.Context(), u, err)
 	}
 
 	var rows []runHistoryFeedRow
@@ -273,6 +274,11 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		if ar.AvgHR != nil {
 			row["avg_heartrate"] = *ar.AvgHR
+		}
+		// Séance à intervalles : l'allure ci-dessus est une moyenne qui inclut les
+		// récupérations, à ne pas lire comme l'allure tenue.
+		if strava.IsIntervalWorkout(ar.WorkoutType, ar.Name) {
+			row["is_interval"] = true
 		}
 		rows = append(rows, runHistoryFeedRow{at: at, m: row})
 	}
@@ -343,7 +349,7 @@ func (h *Handlers) GetStravaActivityDetail(w http.ResponseWriter, r *http.Reques
 	}
 	token, err := h.ensureStravaAccess(r.Context(), u)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "tokens Strava indisponibles"})
+		h.writeStravaError(w, r, u, err, "tokens Strava indisponibles")
 		return
 	}
 	act, err := h.strava.FetchActivityDetail(r.Context(), token, aid)
@@ -352,14 +358,22 @@ func (h *Handlers) GetStravaActivityDetail(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "activité introuvable"})
 			return
 		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Strava indisponible"})
+		h.writeStravaError(w, r, u, err, "Strava indisponible")
 		return
 	}
 	st, err := h.strava.FetchActivityStreams(r.Context(), token, aid)
 	if err != nil || st == nil {
 		st = &strava.ActivityStreams{}
 	}
-	m := strava.BuildLiveRunDetailMap(act, st)
+	// Tours de montre : seulement pour un fractionné, où ils portent le découpage
+	// effort / récupération. Ailleurs ils n'apprennent rien et coûtent un appel.
+	var laps []strava.Lap
+	if strava.IsIntervalWorkout(act.WorkoutType, act.Name) {
+		if l, err := h.strava.FetchActivityLaps(r.Context(), token, aid); err == nil {
+			laps = l
+		}
+	}
+	m := strava.BuildLiveRunDetailMap(act, st, laps)
 	writeJSON(w, http.StatusOK, m)
 }
 

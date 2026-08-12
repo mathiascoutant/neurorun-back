@@ -292,6 +292,17 @@ func (d *DB) UpdateStravaTokens(ctx context.Context, userID primitive.ObjectID, 
 	return err
 }
 
+// ClearStravaTokens efface l'association Strava. Appelé quand Strava refuse les
+// jetons : les garder ferait croire à l'appli qu'elle est liée à un compte qui l'a
+// révoquée, et chaque écran retomberait sur la même erreur.
+func (d *DB) ClearStravaTokens(ctx context.Context, userID primitive.ObjectID) error {
+	_, err := d.users.UpdateOne(ctx,
+		bson.M{"_id": userID},
+		bson.M{"$unset": bson.M{"strava": ""}},
+	)
+	return err
+}
+
 func (d *DB) CreateConversation(ctx context.Context, userID primitive.ObjectID) (*models.Conversation, error) {
 	now := time.Now().UTC()
 	c := models.Conversation{
@@ -490,6 +501,60 @@ func (d *DB) UpdateGoalTrainingFields(ctx context.Context, userID, goalID primit
 	}
 	if !useCustom {
 		update["$unset"] = bson.M{"calendar_day_offsets": ""}
+	}
+	res, err := d.goals.UpdateOne(ctx, bson.M{"_id": goalID, "user_id": userID}, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateGoalSchedule enregistre le calendrier décidé avec le coach : jours de la
+// semaine, reports/annulations séance par séance et périodes indisponibles.
+// Le plan et les paramètres de l'objectif ne sont pas touchés — déplacer une
+// séance ne change pas son contenu.
+func (d *DB) UpdateGoalSchedule(
+	ctx context.Context,
+	userID, goalID primitive.ObjectID,
+	offsets []int,
+	overrides []models.SessionOverride,
+	unavailabilities []models.Unavailability,
+) error {
+	set := bson.M{}
+	unset := bson.M{}
+
+	validOffsets := len(offsets) > 0
+	for _, x := range offsets {
+		if x < 0 || x > 6 {
+			validOffsets = false
+			break
+		}
+	}
+	if validOffsets {
+		set["calendar_day_offsets"] = offsets
+	} else {
+		unset["calendar_day_offsets"] = ""
+	}
+	if len(overrides) > 0 {
+		set["session_overrides"] = overrides
+	} else {
+		unset["session_overrides"] = ""
+	}
+	if len(unavailabilities) > 0 {
+		set["unavailabilities"] = unavailabilities
+	} else {
+		unset["unavailabilities"] = ""
+	}
+
+	update := bson.M{}
+	if len(set) > 0 {
+		update["$set"] = set
+	}
+	if len(unset) > 0 {
+		update["$unset"] = unset
 	}
 	res, err := d.goals.UpdateOne(ctx, bson.M{"_id": goalID, "user_id": userID}, update)
 	if err != nil {

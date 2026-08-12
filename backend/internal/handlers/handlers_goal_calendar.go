@@ -41,27 +41,77 @@ func (h *Handlers) GoalCalendar(w http.ResponseWriter, r *http.Request) {
 	if u.HasStrava() {
 		access, err := h.ensureStravaAccess(r.Context(), u)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "impossible d'accéder à Strava, reconnectez le compte"})
+			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
 		after := g.CreatedAt.Unix() - 7200
 		runs, err = h.strava.FetchRunActivities(r.Context(), access, &after)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur Strava"})
+			h.writeStravaError(w, r, u, err, "erreur Strava")
 			return
 		}
 	}
 
-	loc, err := time.LoadLocation("Europe/Paris")
-	tzName := "Europe/Paris"
-	if err != nil {
-		loc = time.UTC
-		tzName = "UTC"
-	}
-
-	items := goalcalendar.BuildCalendarItems(g, runs, loc, time.Now().UTC())
+	loc, tzName := calendarLocation()
+	items := goalcalendar.BuildCalendarItems(g, runs, loc, time.Now().UTC(), h.effortPaceResolver(r, u))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"timezone": tzName,
-		"items":    items,
+		"timezone":         tzName,
+		"items":            items,
+		"unavailabilities": g.Unavailabilities,
 	})
+}
+
+// calendarLocation : les jours du plan sont des jours civils, ils ont besoin d'un
+// fuseau de référence. Repli sur UTC si la base tz manque sur l'hôte.
+func calendarLocation() (*time.Location, string) {
+	loc, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		return time.UTC, "UTC"
+	}
+	return loc, "Europe/Paris"
+}
+
+// Plafond d'appels « tours » par construction de calendrier : le quota Strava est
+// partagé par toute l'application, une régénération de plan ne doit pas le vider.
+const maxLapFetchesPerCalendar = 12
+
+// effortPaceResolver donne l'allure des seuls efforts d'un fractionné, lue sur les
+// tours de la montre. Résultat mémorisé par activité : une même sortie peut être
+// candidate pour plusieurs séances du plan. Renvoie nil hors Strava — la séance est
+// alors validée sur la distance, jamais sur une moyenne qui inclut les récupérations.
+func (h *Handlers) effortPaceResolver(r *http.Request, u *models.User) goalcalendar.EffortPaceResolver {
+	if !u.HasStrava() {
+		return nil
+	}
+	cache := map[int64]*float64{}
+	fetches := 0
+	return func(run strava.RunActivity) *float64 {
+		if run.ID <= 0 {
+			return nil
+		}
+		if p, ok := cache[run.ID]; ok {
+			return p
+		}
+		if fetches >= maxLapFetchesPerCalendar {
+			return nil
+		}
+		fetches++
+		cache[run.ID] = nil
+
+		access, err := h.ensureStravaAccess(r.Context(), u)
+		if err != nil {
+			return nil
+		}
+		laps, err := h.strava.FetchActivityLaps(r.Context(), access, run.ID)
+		if err != nil {
+			return nil
+		}
+		summary := strava.IntervalSummaryFromLaps(laps)
+		if summary == nil || summary.EffortPaceSecPerKm <= 0 {
+			return nil
+		}
+		p := summary.EffortPaceSecPerKm
+		cache[run.ID] = &p
+		return &p
+	}
 }

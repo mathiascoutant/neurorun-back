@@ -100,9 +100,12 @@ type RaceLegForecast struct {
 
 // RaceForecastPayload réponse API prévisions course.
 type RaceForecastPayload struct {
-	Legs           []RaceLegForecast `json:"legs"`
-	RunsAnalyzed   int               `json:"runs_analyzed"`
-	GeneratedAtRFC string            `json:"generated_at"`
+	Legs         []RaceLegForecast `json:"legs"`
+	RunsAnalyzed int               `json:"runs_analyzed"`
+	// Séances à intervalles écartées du calcul d'allure : leur moyenne, récupérations
+	// comprises, ne mesure pas une performance.
+	IntervalsExcluded int    `json:"intervals_excluded,omitempty"`
+	GeneratedAtRFC    string `json:"generated_at"`
 	// Profondeur d'historique réellement prise en compte.
 	WindowDays int `json:"window_days"`
 	// Sortie la plus longue de la fenêtre, toutes distances confondues.
@@ -292,6 +295,7 @@ func BuildRaceForecast(runs []RunActivity) RaceForecastPayload {
 func buildRaceForecastAt(runs []RunActivity, now time.Time) RaceForecastPayload {
 	pool := make([]forecastRun, 0, len(runs))
 	longestKm := 0.0
+	intervalsExcluded := 0
 
 	for _, r := range runs {
 		km := r.DistanceM / 1000
@@ -307,6 +311,17 @@ func buildRaceForecastAt(runs []RunActivity, now time.Time) RaceForecastPayload 
 		}
 		ageDays := now.Sub(r.StartAt).Hours() / 24
 		if ageDays > forecastWindowDays {
+			continue
+		}
+		// Une séance à intervalles ne mesure aucune allure tenue : sa moyenne
+		// additionne les récupérations. La convertir en performance ferait passer
+		// le coureur pour plus lent alors que la séance prouve l'inverse. Les
+		// kilomètres, eux, ont bien été courus : ils comptent pour l'endurance.
+		if IsIntervalWorkout(r.WorkoutType, r.Name) {
+			intervalsExcluded++
+			if km > longestKm {
+				longestKm = km
+			}
 			continue
 		}
 		fr := forecastRun{
@@ -329,11 +344,12 @@ func buildRaceForecastAt(runs []RunActivity, now time.Time) RaceForecastPayload 
 	}
 
 	return RaceForecastPayload{
-		Legs:           legs,
-		RunsAnalyzed:   len(pool),
-		GeneratedAtRFC: now.Format(time.RFC3339),
-		WindowDays:     int(forecastWindowDays),
-		LongestRunKm:   round2(longestKm),
+		Legs:              legs,
+		RunsAnalyzed:      len(pool),
+		IntervalsExcluded: intervalsExcluded,
+		GeneratedAtRFC:    now.Format(time.RFC3339),
+		WindowDays:        int(forecastWindowDays),
+		LongestRunKm:      round2(longestKm),
 	}
 }
 
