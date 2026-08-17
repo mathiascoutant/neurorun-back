@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 
 	"runapp/internal/models"
@@ -37,17 +38,49 @@ const (
 	minIntervalBlockSec = 25
 	// Fenêtre de lissage du flux vitesse avant seuillage.
 	streamSmoothSec = 15
-	// Bornes d'allure d'un segment exploitable (s/km) : 2:00 à 30:00.
+	// Bornes d'allure d'un segment exploitable (s/km) : 2:00 à 50:00, la seconde
+	// laissant passer une récupération marchée.
 	minSegmentPaceSecPerKm = 120
-	maxSegmentPaceSecPerKm = 1800
-	// Un segment plus petit ne pèse rien et fausse le classement.
-	minSegmentDistanceM = 100
-	minSegmentSec       = 15
+	maxSegmentPaceSecPerKm = 3000
+	// En deçà, ce n'est pas une portion de séance mais un tour déclenché par
+	// erreur ou un artefact de découpage. Le seuil reste bas exprès : une récup
+	// marchée de 45 m en 30 s est une vraie ligne de la séance, et l'écarter
+	// collerait deux répétitions l'une à l'autre.
+	minSegmentDistanceM = 20
+	minSegmentSec       = 5
+	// Durée minimale d'un échauffement ou d'un retour au calme : en deçà, un bloc
+	// un peu long reste une répétition.
+	minEdgeBlockSec = 120
+	// Et sa durée vaut au moins ce multiple des blocs de même nature.
+	edgeLengthFactor = 2.0
 	// Part du temps passée en effort au-delà de laquelle le découpage n'a plus
 	// de sens (tout effort ou tout récup = mauvaise segmentation).
 	minEffortTimeShare = 0.05
 	maxEffortTimeShare = 0.95
 )
+
+// Natures d'un segment de séance.
+const (
+	SegmentWarmup   = "warmup"
+	SegmentWork     = "work"
+	SegmentRecovery = "recovery"
+	SegmentCooldown = "cooldown"
+)
+
+// IntervalSegment est une portion de la séance dans l'ordre où elle a été courue :
+// une répétition, une récupération, l'échauffement ou le retour au calme. C'est le
+// seul découpage où l'allure affichée correspond à quelque chose qui a été couru —
+// un kilomètre de fractionné, lui, mélange effort et récupération.
+type IntervalSegment struct {
+	Index int    `json:"index"`
+	Kind  string `json:"kind"`
+	// Numéro de répétition (1-indexé), 0 hors des blocs d'effort.
+	Rep          int     `json:"rep,omitempty"`
+	DistanceM    float64 `json:"distance_m"`
+	Sec          float64 `json:"sec"`
+	PaceSecPerKm float64 `json:"pace_sec_per_km"`
+	AvgHeartrate float64 `json:"avg_heartrate,omitempty"`
+}
 
 // IntervalSummary décrit une séance à intervalles hors récupération.
 type IntervalSummary struct {
@@ -61,16 +94,20 @@ type IntervalSummary struct {
 	// D'où vient le découpage : "laps" (tours de montre), "stream" (flux
 	// vitesse) ou "splits" (kilomètres). Le premier est le plus fidèle.
 	Source string `json:"source"`
+	// Détail dans l'ordre de la séance. Absent quand le découpage vient des
+	// kilomètres : les détailler ne dirait rien de plus que le tableau des km.
+	Segments []IntervalSegment `json:"segments,omitempty"`
 }
 
 // Lap est un tour Strava. Sur une séance à intervalles enregistrée à la montre,
 // un tour vaut une répétition ou une récupération.
 type Lap struct {
-	Index        int     `json:"lap_index"`
-	Distance     float64 `json:"distance"`
-	MovingTime   int     `json:"moving_time"`
-	ElapsedTime  int     `json:"elapsed_time"`
-	AverageSpeed float64 `json:"average_speed"`
+	Index            int     `json:"lap_index"`
+	Distance         float64 `json:"distance"`
+	MovingTime       int     `json:"moving_time"`
+	ElapsedTime      int     `json:"elapsed_time"`
+	AverageSpeed     float64 `json:"average_speed"`
+	AverageHeartrate float64 `json:"average_heartrate"`
 }
 
 // FetchActivityLaps appelle GET /activities/{id}/laps. Une activité sans tours
@@ -149,6 +186,8 @@ func IsIntervalWorkout(workoutType int, name string) bool {
 type effortSegment struct {
 	distanceM float64
 	sec       float64
+	// FC moyenne du segment, 0 si la source ne la porte pas.
+	hrBpm float64
 }
 
 func (s effortSegment) paceSecPerKm() float64 {
@@ -158,6 +197,8 @@ func (s effortSegment) paceSecPerKm() float64 {
 	return s.sec / (s.distanceM / 1000)
 }
 
+// usable dit si le segment est une portion réelle de la séance : à classer, à
+// compter et à afficher.
 func (s effortSegment) usable() bool {
 	if s.distanceM < minSegmentDistanceM || s.sec < minSegmentSec {
 		return false
@@ -212,40 +253,95 @@ func twoMeans(xs, ws []float64) (low, high float64, ok bool) {
 	return low, high, high > low
 }
 
-// splitEffortRecovery sépare des segments en efforts et récupérations d'après
-// leur allure. ok=false quand les deux groupes ne se détachent pas assez : la
-// sortie est alors simplement irrégulière, pas fractionnée.
-func splitEffortRecovery(segs []effortSegment) (efforts, recoveries []effortSegment, ok bool) {
-	var usable []effortSegment
-	for _, s := range segs {
-		if s.usable() {
-			usable = append(usable, s)
-		}
+// paceCenters calcule les deux allures types de la séance — celle des efforts et
+// celle des récupérations. Chaque segment pèse sa distance : un tour parasite de
+// quelques dizaines de mètres ne déplace pas les repères. ok=false quand les deux
+// groupes ne se détachent pas assez : la sortie est alors simplement irrégulière,
+// pas fractionnée.
+func paceCenters(segs []effortSegment) (fast, slow float64, ok bool) {
+	if len(segs) < minIntervalEfforts+1 {
+		return 0, 0, false
 	}
-	if len(usable) < minIntervalEfforts+1 {
-		return nil, nil, false
-	}
-	paces := make([]float64, len(usable))
-	weights := make([]float64, len(usable))
-	for i, s := range usable {
+	paces := make([]float64, len(segs))
+	weights := make([]float64, len(segs))
+	for i, s := range segs {
 		paces[i] = s.paceSecPerKm()
 		weights[i] = s.distanceM
 	}
-	fast, slow, ok := twoMeans(paces, weights)
+	fast, slow, ok = twoMeans(paces, weights)
 	if !ok || slow-fast < minIntervalPaceGapSecPerKm {
-		return nil, nil, false
+		return 0, 0, false
 	}
-	for i, p := range paces {
-		if math.Abs(p-fast) <= math.Abs(p-slow) {
-			efforts = append(efforts, usable[i])
-		} else {
-			recoveries = append(recoveries, usable[i])
+	return fast, slow, true
+}
+
+// isWork range un segment du côté effort ou du côté récupération, d'après son
+// allure et les deux allures types de la séance.
+func isWork(s effortSegment, fast, slow float64) bool {
+	p := s.paceSecPerKm()
+	return math.Abs(p-fast) <= math.Abs(p-slow)
+}
+
+func medianSec(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), xs...)
+	sort.Float64s(sorted)
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[mid]
+	}
+	return (sorted[mid-1] + sorted[mid]) / 2
+}
+
+// isEdgeOutlier dit si le segment i dure bien plus longtemps que les autres blocs
+// de même nature : la signature d'un échauffement ou d'un retour au calme, pas
+// d'une répétition.
+func isEdgeOutlier(segs []effortSegment, i int, fast, slow float64) bool {
+	s := segs[i]
+	if s.sec < minEdgeBlockSec {
+		return false
+	}
+	work := isWork(s, fast, slow)
+	var peers []float64
+	for j, o := range segs {
+		if j == i || isWork(o, fast, slow) != work {
+			continue
 		}
+		peers = append(peers, o.sec)
 	}
-	if len(efforts) < minIntervalEfforts || len(recoveries) == 0 {
-		return nil, nil, false
+	if len(peers) < 2 {
+		return false
 	}
-	return efforts, recoveries, true
+	return s.sec >= edgeLengthFactor*medianSec(peers)
+}
+
+// stripEdges isole l'échauffement et le retour au calme avant tout classement.
+// Sans ça, un échauffement de 2,4 km à 6:26/km est rangé avec les répétitions à
+// 4:25/km et décale l'allure d'effort de toute la séance — l'erreur exacte qu'on
+// cherche à corriger.
+func stripEdges(segs []effortSegment) (core []effortSegment, warmup, cooldown *effortSegment) {
+	core = segs
+	// Chaque retrait change les allures types : on reclasse et on recommence.
+	for pass := 0; pass < 4; pass++ {
+		fast, slow, ok := paceCenters(core)
+		if !ok || len(core) <= minIntervalEfforts+1 {
+			return core, warmup, cooldown
+		}
+		if warmup == nil && isEdgeOutlier(core, 0, fast, slow) {
+			w := core[0]
+			warmup, core = &w, core[1:]
+			continue
+		}
+		if cooldown == nil && isEdgeOutlier(core, len(core)-1, fast, slow) {
+			c := core[len(core)-1]
+			cooldown, core = &c, core[:len(core)-1]
+			continue
+		}
+		return core, warmup, cooldown
+	}
+	return core, warmup, cooldown
 }
 
 func totals(segs []effortSegment) (distanceM, sec float64) {
@@ -257,15 +353,58 @@ func totals(segs []effortSegment) (distanceM, sec float64) {
 }
 
 func summarize(segs []effortSegment, source string) *IntervalSummary {
-	efforts, recoveries, ok := splitEffortRecovery(segs)
+	var kept []effortSegment
+	for _, s := range segs {
+		if s.usable() {
+			kept = append(kept, s)
+		}
+	}
+	core, warmup, cooldown := stripEdges(kept)
+	fast, slow, ok := paceCenters(core)
 	if !ok {
+		return nil
+	}
+
+	list := make([]IntervalSegment, 0, len(kept))
+	add := func(s effortSegment, kind string, rep int) {
+		list = append(list, IntervalSegment{
+			Index:        len(list) + 1,
+			Kind:         kind,
+			Rep:          rep,
+			DistanceM:    s.distanceM,
+			Sec:          s.sec,
+			PaceSecPerKm: s.paceSecPerKm(),
+			AvgHeartrate: s.hrBpm,
+		})
+	}
+
+	var efforts, recoveries []effortSegment
+	if warmup != nil {
+		add(*warmup, SegmentWarmup, 0)
+	}
+	for _, s := range core {
+		if isWork(s, fast, slow) {
+			efforts = append(efforts, s)
+			add(s, SegmentWork, len(efforts))
+		} else {
+			recoveries = append(recoveries, s)
+			add(s, SegmentRecovery, 0)
+		}
+	}
+	if cooldown != nil {
+		add(*cooldown, SegmentCooldown, 0)
+	}
+
+	if len(efforts) < minIntervalEfforts || len(recoveries) == 0 {
 		return nil
 	}
 	effDist, effSec := totals(efforts)
 	recDist, recSec := totals(recoveries)
-	if effSec <= 0 || recSec <= 0 {
+	if effDist <= 0 || recDist <= 0 || effSec <= 0 || recSec <= 0 {
 		return nil
 	}
+	// Part d'effort dans le bloc de fractionné seul : échauffement et retour au
+	// calme en sont exclus, ils ne disent rien de la façon dont il a été mené.
 	share := effSec / (effSec + recSec)
 	if share < minEffortTimeShare || share > maxEffortTimeShare {
 		return nil
@@ -279,6 +418,7 @@ func summarize(segs []effortSegment, source string) *IntervalSummary {
 		RecoverySec:          recSec,
 		RecoveryPaceSecPerKm: recSec / (recDist / 1000),
 		Source:               source,
+		Segments:             list,
 	}
 }
 
@@ -293,7 +433,11 @@ func IntervalSummaryFromLaps(laps []Lap) *IntervalSummary {
 		if sec <= 0 {
 			sec = float64(l.ElapsedTime)
 		}
-		segs = append(segs, effortSegment{distanceM: l.Distance, sec: sec})
+		hr := l.AverageHeartrate
+		if hr < 30 || hr > 235 {
+			hr = 0
+		}
+		segs = append(segs, effortSegment{distanceM: l.Distance, sec: sec, hrBpm: hr})
 	}
 	return summarize(segs, "laps")
 }
@@ -313,7 +457,14 @@ func IntervalSummaryFromSplits(splits []models.LiveRunSplit) *IntervalSummary {
 		distM := sp.SplitSec / sp.PaceSecPerKm * 1000
 		segs = append(segs, effortSegment{distanceM: distM, sec: sp.SplitSec})
 	}
-	return summarize(segs, "splits")
+	s := summarize(segs, "splits")
+	if s != nil {
+		// Un kilomètre de fractionné contient à la fois de l'effort et de la
+		// récupération : l'afficher ligne à ligne étiqueté « travail » ou
+		// « récupération » reproduirait la confusion qu'on cherche à lever.
+		s.Segments = nil
+	}
+	return s
 }
 
 // smoothVelocity lisse le flux vitesse sur une fenêtre glissante centrée, pour

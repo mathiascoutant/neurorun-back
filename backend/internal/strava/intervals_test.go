@@ -73,6 +73,71 @@ func TestIntervalSummaryFromLaps(t *testing.T) {
 	}
 }
 
+func TestIntervalSummaryFromLapsIsolatesWarmupAndCooldown(t *testing.T) {
+	// Séance telle qu'une montre l'enregistre : échauffement, 8 × 400 m en 1:46
+	// avec 1:30 de récup trottinée, retour au calme.
+	laps := []Lap{{Index: 1, Distance: 2440, MovingTime: 945, ElapsedTime: 945}}
+	laps = append(laps, lapsAlternating(8, 400, 106, 130, 90)...)
+	laps = append(laps, Lap{Index: 18, Distance: 1200, MovingTime: 480, ElapsedTime: 480})
+
+	s := IntervalSummaryFromLaps(laps)
+	if s == nil {
+		t.Fatal("aucun découpage trouvé sur une séance de piste classique")
+	}
+	if s.EffortCount != 8 {
+		t.Fatalf("EffortCount = %d, attendu 8 : l'échauffement a été compté comme une répétition", s.EffortCount)
+	}
+	// 400 m en 1:46 = 4:25/km. Un échauffement rangé avec les efforts la ferait
+	// grimper vers 5:20/km.
+	if math.Abs(s.EffortPaceSecPerKm-265) > 2 {
+		t.Fatalf("EffortPaceSecPerKm = %.1f, attendu ~265", s.EffortPaceSecPerKm)
+	}
+	// De même, un échauffement rangé avec les récupérations les rendrait bien
+	// plus rapides qu'elles ne l'ont été (130 m en 1:30 = 11:32/km).
+	if math.Abs(s.RecoveryPaceSecPerKm-692) > 5 {
+		t.Fatalf("RecoveryPaceSecPerKm = %.1f, attendu ~692", s.RecoveryPaceSecPerKm)
+	}
+
+	if len(s.Segments) != len(laps) {
+		t.Fatalf("Segments = %d lignes, attendu %d (une par tour)", len(s.Segments), len(laps))
+	}
+	if s.Segments[0].Kind != SegmentWarmup {
+		t.Fatalf("premier segment = %q, attendu %q", s.Segments[0].Kind, SegmentWarmup)
+	}
+	last := s.Segments[len(s.Segments)-1]
+	if last.Kind != SegmentCooldown {
+		t.Fatalf("dernier segment = %q, attendu %q", last.Kind, SegmentCooldown)
+	}
+	for i, seg := range s.Segments[1 : len(s.Segments)-1] {
+		want := SegmentWork
+		if i%2 == 1 {
+			want = SegmentRecovery
+		}
+		if seg.Kind != want {
+			t.Fatalf("segment %d = %q, attendu %q : l'alternance effort / récup est cassée", seg.Index, seg.Kind, want)
+		}
+	}
+	if rep := s.Segments[3].Rep; rep != 2 {
+		t.Fatalf("Rep du 2e effort = %d, attendu 2", rep)
+	}
+}
+
+// Une récupération courte reste une ligne de la séance : sans elle, deux
+// répétitions se retrouveraient collées dans le détail affiché.
+func TestIntervalSummaryFromLapsKeepsShortRecoveries(t *testing.T) {
+	// 30/30 : 8 × 30 s à 3:20/km, 30 s de récup marchée (45 m).
+	s := IntervalSummaryFromLaps(lapsAlternating(8, 150, 30, 45, 30))
+	if s == nil {
+		t.Fatal("aucun découpage trouvé sur un 30/30")
+	}
+	if len(s.Segments) != 16 {
+		t.Fatalf("Segments = %d lignes, attendu 16", len(s.Segments))
+	}
+	if s.EffortCount != 8 {
+		t.Fatalf("EffortCount = %d, attendu 8", s.EffortCount)
+	}
+}
+
 func TestIntervalSummaryFromLapsRejectsSteadyRun(t *testing.T) {
 	// Sortie régulière découpée en tours de 1 km : aucun effort à isoler.
 	var laps []Lap
