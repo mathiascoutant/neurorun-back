@@ -333,7 +333,11 @@ func (h *Handlers) GetLiveRun(w http.ResponseWriter, r *http.Request) {
 		if !h.requireCapability(w, r, u, "live_runs") {
 			return
 		}
-		writeJSON(w, http.StatusOK, liveRunToJSON(run))
+		out := liveRunToJSON(run)
+		// Sa propre course porte les réactions reçues : c'est là qu'atterrit le tap
+		// sur une notification « Lucas t'a boosté ».
+		out["boosts_received"] = h.boostersForRun(r.Context(), run.ID)
+		writeJSON(w, http.StatusOK, out)
 		return
 	}
 

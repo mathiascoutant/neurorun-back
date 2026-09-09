@@ -1541,6 +1541,8 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/friends/requests/{id}/respond", h.RespondFriendRequest)
 		pr.Delete("/friends/requests/{id}", h.CancelFriendRequest)
 		pr.Get("/boost/feed", h.BoostFeed)
+		pr.Get("/boost/received", h.BoostsReceived)
+		pr.Get("/boost/leaderboard", h.BoostLeaderboard)
 		pr.Post("/live-runs/{id}/boost", h.BoostRun)
 		pr.Delete("/live-runs/{id}/boost", h.RemoveBoostFromRun)
 		pr.Post("/push-token", h.RegisterPushToken)

@@ -420,6 +420,72 @@ func (d *DB) ListBoostsForRuns(ctx context.Context, runIDs []primitive.ObjectID)
 	return out, nil
 }
 
+// ListBoostsReceived : réactions reçues sur ses propres courses, de la plus récente
+// à la plus ancienne. Alimente le fil d'activité de l'onglet Boost.
+func (d *DB) ListBoostsReceived(ctx context.Context, userID primitive.ObjectID, limit int64) ([]models.Boost, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	cur, err := d.boosts.Find(ctx,
+		bson.M{"run_owner_id": userID, "from_user_id": bson.M{"$ne": userID}},
+		options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}}).SetLimit(limit),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.Boost
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UserDistance : cumul d'un compte sur une période.
+type UserDistance struct {
+	UserID    primitive.ObjectID
+	DistanceM float64
+	Runs      int
+}
+
+// SumDistanceByUsersSince agrège les kilomètres par compte depuis `since`.
+// Les comptes sans course sur la période sont absents du résultat : l'appelant
+// les réintroduit à zéro pour que le classement reste complet.
+func (d *DB) SumDistanceByUsersSince(ctx context.Context, userIDs []primitive.ObjectID, since time.Time) (map[primitive.ObjectID]UserDistance, error) {
+	out := make(map[primitive.ObjectID]UserDistance, len(userIDs))
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"user_id":    bson.M{"$in": userIDs},
+			"created_at": bson.M{"$gte": since.UTC()},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":      "$user_id",
+			"distance": bson.M{"$sum": "$distance_m"},
+			"runs":     bson.M{"$sum": 1},
+		}}},
+	}
+	cur, err := d.liveRuns.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	for cur.Next(ctx) {
+		var row struct {
+			ID       primitive.ObjectID `bson:"_id"`
+			Distance float64            `bson:"distance"`
+			Runs     int                `bson:"runs"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return nil, err
+		}
+		out[row.ID] = UserDistance{UserID: row.ID, DistanceM: row.Distance, Runs: row.Runs}
+	}
+	return out, cur.Err()
+}
+
 // UpsertPushToken lie un appareil au compte courant. Un même appareil qui change de
 // compte écrase la ligne précédente (index unique sur token).
 func (d *DB) UpsertPushToken(ctx context.Context, token string, userID primitive.ObjectID, platform string) error {

@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -364,6 +365,159 @@ func elevationGain(lr *models.LiveRun) float64 {
 		return 0
 	}
 	return lr.ClientStats.ElevationGainM
+}
+
+// BoostsReceived GET /api/boost/received — réactions reçues sur ses propres courses.
+// Sans ça, une notification « Lucas t'a boosté » ne mène nulle part dans l'app.
+func (h *Handlers) BoostsReceived(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+
+	limit := int64(20)
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = int64(v)
+	}
+	rows, err := h.db.ListBoostsReceived(r.Context(), u.ID, limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lecture impossible"})
+		return
+	}
+	if len(rows) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		return
+	}
+
+	senderIDs := make([]primitive.ObjectID, 0, len(rows))
+	runIDs := make([]primitive.ObjectID, 0, len(rows))
+	for i := range rows {
+		senderIDs = append(senderIDs, rows[i].FromUserID)
+		runIDs = append(runIDs, rows[i].RunID)
+	}
+	senders := h.usersByID(r.Context(), senderIDs)
+
+	// Les courses sont chargées une par une : la liste est courte et bornée par `limit`.
+	runs := make(map[primitive.ObjectID]*models.LiveRun, len(runIDs))
+	for _, id := range runIDs {
+		if _, seen := runs[id]; seen {
+			continue
+		}
+		if run, err := h.db.GetLiveRunMetaByID(r.Context(), id); err == nil {
+			runs[id] = run
+		}
+	}
+
+	items := make([]map[string]any, 0, len(rows))
+	for i := range rows {
+		b := &rows[i]
+		sender, ok := senders[b.FromUserID]
+		if !ok {
+			continue
+		}
+		item := map[string]any{
+			"kind":       b.Kind,
+			"created_at": b.UpdatedAt.UTC().Format(time.RFC3339),
+			"run_id":     b.RunID.Hex(),
+			"user":       friendPublic(sender),
+		}
+		if run, ok := runs[b.RunID]; ok {
+			item["distance_m"] = run.DistanceM
+			item["avg_pace_sec_per_km"] = run.AvgPaceSecPerKm
+			item["run_created_at"] = run.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// boostersForRun : qui a réagi à une course, et comment. Renvoie une liste vide
+// plutôt que nil pour que le client reçoive toujours un tableau JSON.
+func (h *Handlers) boostersForRun(ctx context.Context, runID primitive.ObjectID) []map[string]any {
+	out := make([]map[string]any, 0)
+	byRun, err := h.db.ListBoostsForRuns(ctx, []primitive.ObjectID{runID})
+	if err != nil {
+		return out
+	}
+	rows := byRun[runID]
+	if len(rows) == 0 {
+		return out
+	}
+	ids := make([]primitive.ObjectID, 0, len(rows))
+	for i := range rows {
+		ids = append(ids, rows[i].FromUserID)
+	}
+	senders := h.usersByID(ctx, ids)
+	for i := range rows {
+		sender, ok := senders[rows[i].FromUserID]
+		if !ok {
+			continue
+		}
+		out = append(out, map[string]any{
+			"kind":       rows[i].Kind,
+			"created_at": rows[i].UpdatedAt.UTC().Format(time.RFC3339),
+			"user":       friendPublic(sender),
+		})
+	}
+	return out
+}
+
+// weekStart : lundi 00:00 à Paris. Les kilomètres d'une semaine sont une notion
+// civile — en UTC, une sortie du dimanche soir bascule sur la semaine suivante.
+func weekStart(now time.Time) time.Time {
+	loc, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		loc = time.UTC
+	}
+	t := now.In(loc)
+	// time.Weekday : dimanche = 0. On ramène à un lundi = 0.
+	offset := (int(t.Weekday()) + 6) % 7
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -offset)
+}
+
+// BoostLeaderboard GET /api/boost/leaderboard — kilomètres de la semaine, soi inclus.
+// Le classement porte sur la distance cumulée et non sur l'allure : tout le monde
+// peut ajouter des kilomètres, alors qu'une hiérarchie d'allure est figée d'avance.
+func (h *Handlers) BoostLeaderboard(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(ctxUser{}).(*models.User)
+
+	friendIDs, err := h.db.ListFriendIDs(r.Context(), u.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lecture impossible"})
+		return
+	}
+	ids := append([]primitive.ObjectID{u.ID}, friendIDs...)
+
+	since := weekStart(time.Now())
+	totals, err := h.db.SumDistanceByUsersSince(r.Context(), ids, since)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lecture impossible"})
+		return
+	}
+	users := h.usersByID(r.Context(), ids)
+
+	rows := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		person, ok := users[id]
+		if !ok {
+			continue
+		}
+		t := totals[id] // absent = semaine sans course, donc zéro
+		rows = append(rows, map[string]any{
+			"user":       friendPublic(person),
+			"distance_m": t.DistanceM,
+			"runs":       t.Runs,
+			"is_me":      id == u.ID,
+		})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i]["distance_m"].(float64) > rows[j]["distance_m"].(float64)
+	})
+	for i := range rows {
+		rows[i]["rank"] = i + 1
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"week_start": since.UTC().Format(time.RFC3339),
+		"rows":       rows,
+	})
 }
 
 // BoostRun POST /api/live-runs/{id}/boost {kind} — réagir à la course d'un ami.
