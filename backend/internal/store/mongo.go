@@ -38,6 +38,10 @@ type DB struct {
 	// adminNotifications / adminPushTokens : alertes inscriptions destinées aux comptes admin.
 	adminNotifications *mongo.Collection
 	adminPushTokens    *mongo.Collection
+	// friendships / boosts / pushTokens : onglet Boost (amis, réactions, notifications).
+	friendships *mongo.Collection
+	boosts      *mongo.Collection
+	pushTokens  *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -90,6 +94,9 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	circuitTimes := database.Collection("circuit_times")
 	adminNotifications := database.Collection("admin_notifications")
 	adminPushTokens := database.Collection("admin_push_tokens")
+	friendships := database.Collection("friendships")
+	boosts := database.Collection("boosts")
+	pushTokens := database.Collection("push_tokens")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -133,6 +140,27 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		Keys:    bson.D{{Key: "token", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
+	// Une seule relation par paire, dans ce sens. Le sens inverse est écarté par
+	// SendFriendRequest, qui vérifie les deux avant d'insérer.
+	_, _ = friendships.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "requester_id", Value: 1}, {Key: "addressee_id", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	_, _ = friendships.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "addressee_id", Value: 1}, {Key: "status", Value: 1}},
+	})
+	// Une réaction par personne et par course : re-boost = mise à jour, pas doublon.
+	_, _ = boosts.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "run_id", Value: 1}, {Key: "from_user_id", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	_, _ = pushTokens.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "token", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	_, _ = pushTokens.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}},
+	})
 	return &DB{
 		client:        client,
 		database:      database,
@@ -147,6 +175,9 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 
 		adminNotifications: adminNotifications,
 		adminPushTokens:    adminPushTokens,
+		friendships:        friendships,
+		boosts:             boosts,
+		pushTokens:         pushTokens,
 	}, nil
 }
 

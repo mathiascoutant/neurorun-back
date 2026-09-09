@@ -27,18 +27,18 @@ const (
 )
 
 type liveRunCreateBody struct {
-	ClientRunID string  `json:"client_run_id"`
-	TargetKm    float64 `json:"target_km"`
-	DistanceM  float64 `json:"distance_m"`
-	MovingSec  float64 `json:"moving_sec"`
-	WallSec    float64 `json:"wall_sec"`
-	GpsStartTsMs int64 `json:"gps_start_ts_ms"`
-	GpsEndTsMs   int64 `json:"gps_end_ts_ms"`
+	ClientRunID  string  `json:"client_run_id"`
+	TargetKm     float64 `json:"target_km"`
+	DistanceM    float64 `json:"distance_m"`
+	MovingSec    float64 `json:"moving_sec"`
+	WallSec      float64 `json:"wall_sec"`
+	GpsStartTsMs int64   `json:"gps_start_ts_ms"`
+	GpsEndTsMs   int64   `json:"gps_end_ts_ms"`
 
-	AvgPaceSecPerKm    float64 `json:"avg_pace_sec_per_km"`
-	MaxImpliedSpeedKmh float64 `json:"max_implied_speed_kmh"`
+	AvgPaceSecPerKm    float64                    `json:"avg_pace_sec_per_km"`
+	MaxImpliedSpeedKmh float64                    `json:"max_implied_speed_kmh"`
 	ClientStats        *models.LiveRunClientStats `json:"client_stats"`
-	Splits             []models.LiveRunSplit `json:"splits"`
+	Splits             []models.LiveRunSplit      `json:"splits"`
 	TrackPoints        []models.LiveRunTrackPoint `json:"track_points"`
 
 	ClientVersion     string `json:"client_version"`
@@ -308,18 +308,18 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// GetLiveRun sert sa propre course, ou celle d'un ami depuis l'onglet Boost. La capacité
+// live_runs ne conditionne que ses propres courses : le fil des amis est ouvert à tous,
+// la gater ici fermerait le détail aux comptes standard.
 func (h *Handlers) GetLiveRun(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
-	if !h.requireCapability(w, r, u, "live_runs") {
-		return
-	}
 	idStr := chi.URLParam(r, "id")
 	oid, err := primitive.ObjectIDFromHex(idStr)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
 		return
 	}
-	run, err := h.db.GetLiveRunByUser(r.Context(), u.ID, oid)
+	run, err := h.db.GetLiveRunByID(r.Context(), oid)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
 		return
@@ -328,7 +328,33 @@ func (h *Handlers) GetLiveRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lecture impossible"})
 		return
 	}
-	writeJSON(w, http.StatusOK, liveRunToJSON(run))
+
+	if run.UserID == u.ID {
+		if !h.requireCapability(w, r, u, "live_runs") {
+			return
+		}
+		writeJSON(w, http.StatusOK, liveRunToJSON(run))
+		return
+	}
+
+	friends, err := h.db.AreFriends(r.Context(), u.ID, run.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lecture impossible"})
+		return
+	}
+	if !friends {
+		// Même réponse qu'une course inexistante : distinguer les deux révélerait
+		// l'existence de courses d'inconnus.
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+		return
+	}
+
+	out := liveRunToJSON(run)
+	owner, err := h.db.FindUserByID(r.Context(), run.UserID)
+	if err == nil {
+		out["user"] = friendPublic(owner)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // GetStravaActivityDetail renvoie le détail d’une activité Strava au même format JSON qu’un live run (splits, stats, trace résamée).

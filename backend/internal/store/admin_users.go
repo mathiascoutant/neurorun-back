@@ -43,13 +43,13 @@ func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, 
 	var out []UserListItem
 	for cur.Next(ctx) {
 		var raw struct {
-			ID          primitive.ObjectID `bson:"_id"`
-			Email       string             `bson:"email"`
-			Role        string             `bson:"role"`
-			Plan        string             `bson:"plan"`
-			CreatedAt   time.Time          `bson:"created_at"`
-			LastSeenAt  *time.Time         `bson:"last_seen_at,omitempty"`
-			Strava      *struct {
+			ID         primitive.ObjectID `bson:"_id"`
+			Email      string             `bson:"email"`
+			Role       string             `bson:"role"`
+			Plan       string             `bson:"plan"`
+			CreatedAt  time.Time          `bson:"created_at"`
+			LastSeenAt *time.Time         `bson:"last_seen_at,omitempty"`
+			Strava     *struct {
 				AccessToken string `bson:"access_token"`
 			} `bson:"strava,omitempty"`
 		}
@@ -166,6 +166,21 @@ func (d *DB) DeleteUserCascade(ctx context.Context, id primitive.ObjectID) error
 	if _, err := d.adminPushTokens.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
 		return err
 	}
+	if _, err := d.pushTokens.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
+		return err
+	}
+	if _, err := d.friendships.DeleteMany(ctx, bson.M{
+		"$or": []bson.M{{"requester_id": id}, {"addressee_id": id}},
+	}); err != nil {
+		return err
+	}
+	// Les réactions émises comme celles reçues : les courses du compte disparaissent,
+	// et un boost orphelin gonflerait le compteur d'une course qui n'existe plus.
+	if _, err := d.boosts.DeleteMany(ctx, bson.M{
+		"$or": []bson.M{{"from_user_id": id}, {"run_owner_id": id}},
+	}); err != nil {
+		return err
+	}
 	res, err := d.users.DeleteOne(ctx, bson.M{"_id": id})
 	if err != nil {
 		return err
@@ -192,7 +207,7 @@ func (d *DB) SignupsByDayUTC(ctx context.Context, days int) ([]SignupDay, error)
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"created_at": bson.M{"$gte": start}}}},
 		{{Key: "$group", Value: bson.M{
-			"_id": bson.M{"$dateToString": bson.M{"format": "%Y-%m-%d", "date": "$created_at", "timezone": "UTC"}},
+			"_id":   bson.M{"$dateToString": bson.M{"format": "%Y-%m-%d", "date": "$created_at", "timezone": "UTC"}},
 			"count": bson.M{"$sum": 1},
 		}}},
 		{{Key: "$sort", Value: bson.M{"_id": 1}}},
@@ -227,11 +242,11 @@ func (d *DB) SignupsByDayUTC(ctx context.Context, days int) ([]SignupDay, error)
 
 // TopUserActivity : score = courses live + objectifs + conversations (approx. « activité »).
 type TopUserActivity struct {
-	UserID       string `json:"user_id"`
-	Email        string `json:"email"`
-	Activity     int64  `json:"activity"`
-	LiveRuns     int64  `json:"live_runs"`
-	Goals        int64  `json:"goals"`
+	UserID        string `json:"user_id"`
+	Email         string `json:"email"`
+	Activity      int64  `json:"activity"`
+	LiveRuns      int64  `json:"live_runs"`
+	Goals         int64  `json:"goals"`
 	Conversations int64  `json:"conversations"`
 }
 
