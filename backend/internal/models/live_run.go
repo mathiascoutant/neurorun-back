@@ -3,15 +3,17 @@ package models
 import (
 	"time"
 
+	"runapp/internal/vma"
+
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // LiveRunSplit : un kilomètre annoncé (temps sur ce km, allure implicite).
 type LiveRunSplit struct {
-	Km               int     `bson:"km" json:"km"`
-	SplitSec         float64 `bson:"split_sec" json:"split_sec"`
-	PaceSecPerKm     float64 `bson:"pace_sec_per_km" json:"pace_sec_per_km"`
-	EndTimestampMs   int64   `bson:"end_timestamp_ms" json:"end_timestamp_ms"`
+	Km             int     `bson:"km" json:"km"`
+	SplitSec       float64 `bson:"split_sec" json:"split_sec"`
+	PaceSecPerKm   float64 `bson:"pace_sec_per_km" json:"pace_sec_per_km"`
+	EndTimestampMs int64   `bson:"end_timestamp_ms" json:"end_timestamp_ms"`
 }
 
 // LiveRunClientStats : agrégats calculés côté app (vitesse max, allures splits, dénivelé, etc.).
@@ -45,6 +47,27 @@ type LiveRunTrackPoint struct {
 	HrBpm      *float64 `bson:"hr_bpm,omitempty" json:"hr_bpm,omitempty"`
 }
 
+// RunScoreExplanation : le « pourquoi » de la note, rédigé par l'IA (ou par
+// le secours déterministe si l'IA est indisponible). Calculé à la première
+// consultation puis mémorisé — inutile de rappeler le modèle à chaque ouverture.
+type RunScoreExplanation struct {
+	Summary   string    `bson:"summary" json:"summary"`
+	Why       []string  `bson:"why" json:"why"`
+	Advice    []string  `bson:"advice" json:"advice"`
+	AiUsed    bool      `bson:"ai_used" json:"ai_used"`
+	CreatedAt time.Time `bson:"created_at" json:"created_at"`
+}
+
+// RunScore : note sur 100 d'une course, figée à l'enregistrement. Elle n'est
+// pas recalculée si l'utilisateur repasse son test de VMA plus tard : la note
+// juge l'exécution du jour, avec la référence du jour.
+type RunScore struct {
+	vma.Result  `bson:",inline"`
+	VmaTestID   string               `bson:"vma_test_id,omitempty" json:"vma_test_id,omitempty"`
+	ComputedAt  time.Time            `bson:"computed_at" json:"computed_at"`
+	Explanation *RunScoreExplanation `bson:"explanation,omitempty" json:"explanation,omitempty"`
+}
+
 // LiveRun : session course en direct enregistrée depuis le front.
 type LiveRun struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
@@ -58,36 +81,38 @@ type LiveRun struct {
 	// TrackTruncated : la trace reçue dépassait la limite et a été coupée.
 	TrackTruncated bool `bson:"track_truncated,omitempty" json:"track_truncated,omitempty"`
 
-	TargetKm   float64 `bson:"target_km" json:"target_km"`
-	DistanceM  float64 `bson:"distance_m" json:"distance_m"`
-	MovingSec  float64 `bson:"moving_sec" json:"moving_sec"`
-	WallSec    float64 `bson:"wall_sec" json:"wall_sec"`
-	GpsStartTsMs int64 `bson:"gps_start_ts_ms" json:"gps_start_ts_ms"`
-	GpsEndTsMs   int64 `bson:"gps_end_ts_ms" json:"gps_end_ts_ms"`
+	TargetKm     float64 `bson:"target_km" json:"target_km"`
+	DistanceM    float64 `bson:"distance_m" json:"distance_m"`
+	MovingSec    float64 `bson:"moving_sec" json:"moving_sec"`
+	WallSec      float64 `bson:"wall_sec" json:"wall_sec"`
+	GpsStartTsMs int64   `bson:"gps_start_ts_ms" json:"gps_start_ts_ms"`
+	GpsEndTsMs   int64   `bson:"gps_end_ts_ms" json:"gps_end_ts_ms"`
 
-	AvgPaceSecPerKm    float64  `bson:"avg_pace_sec_per_km" json:"avg_pace_sec_per_km"`
-	MaxImpliedSpeedKmh float64  `bson:"max_implied_speed_kmh,omitempty" json:"max_implied_speed_kmh,omitempty"`
-	ClientStats        *LiveRunClientStats  `bson:"client_stats,omitempty" json:"client_stats,omitempty"`
-	Splits             []LiveRunSplit `bson:"splits" json:"splits"`
+	AvgPaceSecPerKm    float64             `bson:"avg_pace_sec_per_km" json:"avg_pace_sec_per_km"`
+	MaxImpliedSpeedKmh float64             `bson:"max_implied_speed_kmh,omitempty" json:"max_implied_speed_kmh,omitempty"`
+	ClientStats        *LiveRunClientStats `bson:"client_stats,omitempty" json:"client_stats,omitempty"`
+	Splits             []LiveRunSplit      `bson:"splits" json:"splits"`
+	Score              *RunScore           `bson:"score,omitempty" json:"score,omitempty"`
 	TrackPoints        []LiveRunTrackPoint `bson:"track_points,omitempty" json:"track_points,omitempty"`
 
-	ClientVersion      string `bson:"client_version,omitempty" json:"client_version,omitempty"`
-	UserAgent          string `bson:"user_agent,omitempty" json:"user_agent,omitempty"`
-	NavigatorLanguage  string `bson:"navigator_language,omitempty" json:"navigator_language,omitempty"`
-	ScreenW            int    `bson:"screen_w,omitempty" json:"screen_w,omitempty"`
-	ScreenH            int    `bson:"screen_h,omitempty" json:"screen_h,omitempty"`
-	OnlineAtEnd        bool   `bson:"online_at_end,omitempty" json:"online_at_end,omitempty"`
-	AutoPauseDetected  bool   `bson:"auto_pause_detected,omitempty" json:"auto_pause_detected,omitempty"`
+	ClientVersion     string `bson:"client_version,omitempty" json:"client_version,omitempty"`
+	UserAgent         string `bson:"user_agent,omitempty" json:"user_agent,omitempty"`
+	NavigatorLanguage string `bson:"navigator_language,omitempty" json:"navigator_language,omitempty"`
+	ScreenW           int    `bson:"screen_w,omitempty" json:"screen_w,omitempty"`
+	ScreenH           int    `bson:"screen_h,omitempty" json:"screen_h,omitempty"`
+	OnlineAtEnd       bool   `bson:"online_at_end,omitempty" json:"online_at_end,omitempty"`
+	AutoPauseDetected bool   `bson:"auto_pause_detected,omitempty" json:"auto_pause_detected,omitempty"`
 }
 
 // LiveRunListItem : résumé pour GET /api/live-runs (sans trace complète).
 type LiveRunListItem struct {
-	ID               string  `json:"id"`
-	CreatedAt        string  `json:"created_at"`
-	TargetKm         float64 `json:"target_km"`
-	DistanceM        float64 `json:"distance_m"`
-	MovingSec        float64 `json:"moving_sec"`
-	WallSec          float64 `json:"wall_sec"`
-	AvgPaceSecPerKm  float64 `json:"avg_pace_sec_per_km"`
-	SplitCount       int     `json:"split_count"`
+	ID              string  `json:"id"`
+	CreatedAt       string  `json:"created_at"`
+	TargetKm        float64 `json:"target_km"`
+	DistanceM       float64 `json:"distance_m"`
+	MovingSec       float64 `json:"moving_sec"`
+	WallSec         float64 `json:"wall_sec"`
+	AvgPaceSecPerKm float64 `json:"avg_pace_sec_per_km"`
+	SplitCount      int     `json:"split_count"`
+	ScoreTotal      *int    `json:"score_total,omitempty"`
 }

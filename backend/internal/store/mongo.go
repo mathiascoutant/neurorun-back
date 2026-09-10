@@ -42,6 +42,9 @@ type DB struct {
 	friendships *mongo.Collection
 	boosts      *mongo.Collection
 	pushTokens  *mongo.Collection
+	// vmaTests : historique des tests de VMA (6 min). La VMA courante est
+	// celle du test le plus récent.
+	vmaTests *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -97,6 +100,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	friendships := database.Collection("friendships")
 	boosts := database.Collection("boosts")
 	pushTokens := database.Collection("push_tokens")
+	vmaTests := database.Collection("vma_tests")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -117,6 +121,15 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "client_run_id", Value: 1}},
 		Options: options.Index().SetUnique(true).SetPartialFilterExpression(
 			bson.M{"client_run_id": bson.M{"$type": "string"}},
+		),
+	})
+	_, _ = vmaTests.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+	})
+	_, _ = vmaTests.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "client_test_id", Value: 1}},
+		Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+			bson.M{"client_test_id": bson.M{"$type": "string"}},
 		),
 	})
 	_, _ = promoCodes.Indexes().CreateOne(ctx, mongo.IndexModel{
@@ -168,6 +181,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		conversations: conversations,
 		goals:         goals,
 		liveRuns:      liveRuns,
+		vmaTests:      vmaTests,
 		settings:      settings,
 		promoCodes:    promoCodes,
 		circuits:      circuits,

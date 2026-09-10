@@ -1529,6 +1529,11 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/live-runs", h.CreateLiveRun)
 		pr.Get("/live-runs", h.ListLiveRuns)
 		pr.Get("/live-runs/{id}", h.GetLiveRun)
+		pr.Get("/live-runs/{id}/score", h.GetLiveRunScore)
+		// Test de VMA (6 min) : référence de toutes les notes. Repassable à volonté.
+		pr.Post("/vma-tests", h.CreateVmaTest)
+		pr.Get("/vma", h.GetVma)
+		pr.Delete("/vma-tests/{id}", h.DeleteVmaTest)
 		pr.Get("/run-history/feed", h.RunHistoryFeed)
 		pr.Get("/strava/activities/{id}", h.GetStravaActivityDetail)
 		// Onglet Boost : amis, fil des courses, réactions. Aucune capacité requise —

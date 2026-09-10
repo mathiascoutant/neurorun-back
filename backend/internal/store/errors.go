@@ -10,4 +10,6 @@ var (
 	// pour cet utilisateur. Ce n'est pas une erreur côté client : c'est un
 	// réessai, et l'appelant doit renvoyer la course déjà enregistrée.
 	ErrDuplicateLiveRun = errors.New("live run already recorded")
+	// ErrDuplicateVmaTest : même logique pour un test de VMA renvoyé deux fois.
+	ErrDuplicateVmaTest = errors.New("vma test already recorded")
 )

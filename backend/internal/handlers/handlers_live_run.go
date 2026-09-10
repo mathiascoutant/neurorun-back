@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -126,6 +127,10 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 		AutoPauseDetected:  b.AutoPauseDetected,
 	}
 
+	// Note sur 100, calculée avec la VMA en vigueur maintenant et figée avec la
+	// course : elle juge l'exécution du jour. Sans test de VMA, pas de note.
+	run.Score = h.scoreLiveRun(r.Context(), u.ID, &run)
+
 	if err := h.db.CreateLiveRun(r.Context(), &run); err != nil {
 		// Course déjà enregistrée entre-temps (deux réessais simultanés) :
 		// l'index unique tranche, on renvoie l'existante.
@@ -143,10 +148,23 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	resp := map[string]any{
 		"id":         run.ID.Hex(),
 		"created_at": run.CreatedAt.Format(time.RFC3339),
-	})
+	}
+	if run.Score != nil {
+		resp["score_total"] = run.Score.Total
+	} else {
+		// Pas de note : l'app propose le test de VMA sur l'écran de fin.
+		resp["needs_vma_test"] = !h.userHasVmaTest(r.Context(), u.ID)
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// userHasVmaTest : l'utilisateur a-t-il déjà passé un test de VMA ?
+func (h *Handlers) userHasVmaTest(ctx context.Context, userID primitive.ObjectID) bool {
+	t, err := h.db.LatestVmaTest(ctx, userID)
+	return err == nil && t != nil
 }
 
 func (h *Handlers) ListLiveRuns(w http.ResponseWriter, r *http.Request) {
@@ -170,9 +188,19 @@ func (h *Handlers) ListLiveRuns(w http.ResponseWriter, r *http.Request) {
 			WallSec:         lr.WallSec,
 			AvgPaceSecPerKm: lr.AvgPaceSecPerKm,
 			SplitCount:      len(lr.Splits),
+			ScoreTotal:      scoreTotalOf(lr.Score),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": out})
+}
+
+// scoreTotalOf : note de la course si elle en a une.
+func scoreTotalOf(sc *models.RunScore) *int {
+	if sc == nil {
+		return nil
+	}
+	t := sc.Total
+	return &t
 }
 
 type runHistoryFeedRow struct {
