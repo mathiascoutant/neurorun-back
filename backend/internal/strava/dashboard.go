@@ -33,6 +33,22 @@ type DashboardPacePoint struct {
 	DistanceKm   float64 `json:"distance_km"`
 }
 
+// DashboardTotals résume une période en trois chiffres. Sert à la période
+// précédente : un total n'a de sens que comparé à quelque chose.
+type DashboardTotals struct {
+	RunsTotal  int     `json:"runs_total"`
+	TotalKm    float64 `json:"total_km"`
+	TotalHours float64 `json:"total_hours"`
+}
+
+// DashboardBestRun est la sortie remarquable d'une période (la plus longue, la
+// plus rapide) ou la dernière en date.
+type DashboardBestRun struct {
+	Date         string  `json:"date"`
+	Km           float64 `json:"km"`
+	PaceMinPerKm float64 `json:"pace_min_per_km"`
+}
+
 // DashboardPayload est la réponse JSON du dashboard Strava.
 type DashboardPayload struct {
 	Period       string               `json:"period"`
@@ -45,7 +61,32 @@ type DashboardPayload struct {
 	Pace10k      []DashboardPacePoint `json:"pace_10k"`
 	PaceHalf     []DashboardPacePoint `json:"pace_half"`
 	PaceMarathon []DashboardPacePoint `json:"pace_marathon"`
+
+	// Longueur de la fenêtre en jours et nombre de jours où au moins une course
+	// a eu lieu : « 12 jours actifs sur 30 » dit la régularité, que le total de
+	// kilomètres ne dit pas.
+	PeriodDays int `json:"period_days"`
+	ActiveDays int `json:"active_days"`
+	// Dénivelé positif cumulé, en mètres (0 si aucune source ne le fournit).
+	ElevGainM float64 `json:"elev_gain_m"`
+	// FC moyenne de la période, pondérée par le temps de mouvement.
+	AvgHR *float64 `json:"avg_hr,omitempty"`
+
+	LongestRun *DashboardBestRun `json:"longest_run,omitempty"`
+	FastestRun *DashboardBestRun `json:"fastest_run,omitempty"`
+	LastRun    *DashboardBestRun `json:"last_run,omitempty"`
+	// Mêmes totaux sur la fenêtre de même longueur qui précède. nil pour « all »
+	// (rien avant l'historique) ou si l'appelant n'a pas fourni ce passé.
+	Previous *DashboardTotals `json:"previous,omitempty"`
 }
+
+// Au-delà, le détail jour par jour ferait des centaines de barres que personne
+// ne lit, et le front bascule de toute façon sur la maille hebdomadaire.
+const maxFilledDays = 92
+
+// Une sortie plus courte ne dit rien d'une allure : un aller-retour à la boîte
+// aux lettres ne doit pas devenir un record personnel.
+const minRunKmForBest = 1.0
 
 func weekStartUTC(t time.Time) time.Time {
 	t = t.UTC()
@@ -98,8 +139,37 @@ func sortedKeys(m map[string]*weekAgg) []string {
 	return keys
 }
 
+// DashboardWindow borne la période demandée. Les jours et semaines sans course
+// sont remplis à zéro sur cette fenêtre : sans cela, un graphique « volume
+// quotidien » n'affiche que les jours courus, collés les uns aux autres, et
+// laisse croire à une sortie quotidienne — la moyenne affichée devient une
+// moyenne par jour couru, pas par jour de la période.
+type DashboardWindow struct {
+	Start time.Time
+	End   time.Time
+	// Fenêtre de même longueur qui précède Start, pour la comparaison.
+	Previous []RunActivity
+}
+
+func totalsOf(runs []RunActivity) DashboardTotals {
+	var km, hours float64
+	for _, r := range runs {
+		km += r.DistanceM / 1000
+		hours += float64(r.MovingSec) / 3600
+	}
+	return DashboardTotals{RunsTotal: len(runs), TotalKm: round2(km), TotalHours: round2(hours)}
+}
+
+func bestRunOf(r RunActivity) *DashboardBestRun {
+	return &DashboardBestRun{
+		Date:         r.StartAt.UTC().Format(time.RFC3339),
+		Km:           round2(r.DistanceM / 1000),
+		PaceMinPerKm: paceMinPerKmFromSpeed(r.DistanceM, r.AvgSpeed),
+	}
+}
+
 // BuildDashboard agrège les courses (ordre quelconque) pour l’API.
-func BuildDashboard(runs []RunActivity, periodKey string) DashboardPayload {
+func BuildDashboard(runs []RunActivity, periodKey string, win DashboardWindow) DashboardPayload {
 	if periodKey == "" {
 		periodKey = "30d"
 	}
@@ -110,10 +180,15 @@ func BuildDashboard(runs []RunActivity, periodKey string) DashboardPayload {
 
 	weeks := make(map[string]*weekAgg)
 	days := make(map[string]*weekAgg)
-	var totalKm, totalHours float64
-	for _, r := range sorted {
+	whole := &weekAgg{}
+	var totalKm, totalHours, elevGain float64
+	var longest, fastest *RunActivity
+	for i := range sorted {
+		r := sorted[i]
 		totalKm += r.DistanceM / 1000
 		totalHours += float64(r.MovingSec) / 3600
+		elevGain += r.ElevGainM
+		whole.add(r)
 
 		ws := weekStartUTC(r.StartAt).Format("2006-01-02")
 		if weeks[ws] == nil {
@@ -126,8 +201,24 @@ func BuildDashboard(runs []RunActivity, periodKey string) DashboardPayload {
 			days[ds] = &weekAgg{}
 		}
 		days[ds].add(r)
+
+		if r.DistanceM/1000 >= minRunKmForBest {
+			if longest == nil || r.DistanceM > longest.DistanceM {
+				longest = &sorted[i]
+			}
+			pace := paceMinPerKmFromSpeed(r.DistanceM, r.AvgSpeed)
+			if pace > 0 && (fastest == nil || pace < paceMinPerKmFromSpeed(fastest.DistanceM, fastest.AvgSpeed)) {
+				fastest = &sorted[i]
+			}
+		}
 	}
 
+	activeDays := len(days)
+	start, end := windowBounds(win, sorted)
+
+	for _, k := range emptyWeekKeys(start, end, weeks) {
+		weeks[k] = &weekAgg{}
+	}
 	weekly := make([]DashboardWeek, 0, len(weeks))
 	for _, k := range sortedKeys(weeks) {
 		wa := weeks[k]
@@ -140,6 +231,9 @@ func BuildDashboard(runs []RunActivity, periodKey string) DashboardPayload {
 		})
 	}
 
+	for _, k := range emptyDayKeys(start, end, days) {
+		days[k] = &weekAgg{}
+	}
 	daily := make([]DashboardDay, 0, len(days))
 	for _, k := range sortedKeys(days) {
 		da := days[k]
@@ -176,7 +270,7 @@ func BuildDashboard(runs []RunActivity, periodKey string) DashboardPayload {
 		}
 	}
 
-	return DashboardPayload{
+	out := DashboardPayload{
 		Period:       periodKey,
 		RunsTotal:    len(sorted),
 		TotalKm:      round2(totalKm),
@@ -187,7 +281,103 @@ func BuildDashboard(runs []RunActivity, periodKey string) DashboardPayload {
 		Pace10k:      p10,
 		PaceHalf:     ph,
 		PaceMarathon: pm,
+		PeriodDays:   periodDays(win, start, end),
+		ActiveDays:   activeDays,
+		ElevGainM:    math.Round(elevGain),
+		AvgHR:        whole.avgHR(),
 	}
+	if longest != nil {
+		out.LongestRun = bestRunOf(*longest)
+	}
+	if fastest != nil {
+		out.FastestRun = bestRunOf(*fastest)
+	}
+	if len(sorted) > 0 {
+		out.LastRun = bestRunOf(sorted[len(sorted)-1])
+	}
+	if win.Previous != nil {
+		t := totalsOf(win.Previous)
+		out.Previous = &t
+	}
+	return out
+}
+
+// windowBounds retombe sur l'étendue réelle des courses quand l'appelant n'a pas
+// borné la période — cas de « tout l'historique ».
+func windowBounds(win DashboardWindow, sorted []RunActivity) (time.Time, time.Time) {
+	start, end := win.Start.UTC(), win.End.UTC()
+	if end.IsZero() {
+		end = time.Now().UTC()
+	}
+	if start.IsZero() {
+		if len(sorted) == 0 {
+			return time.Time{}, time.Time{}
+		}
+		start = sorted[0].StartAt.UTC()
+	}
+	if start.After(end) {
+		return time.Time{}, time.Time{}
+	}
+	return start, end
+}
+
+// periodDays donne la longueur de la période telle qu'elle est annoncée à
+// l'utilisateur : « 30 derniers jours » doit se lire « sur 30 », pas « sur 31 »
+// parce que les deux bornes tombent dans des journées différentes. Sans fenêtre
+// fournie — « tout l'historique » — on compte les jours couverts par les courses.
+func periodDays(win DashboardWindow, start, end time.Time) int {
+	if win.Start.IsZero() {
+		return windowDays(start, end)
+	}
+	d := int(math.Round(end.Sub(start).Hours() / 24))
+	if d < 1 {
+		return 1
+	}
+	return d
+}
+
+func windowDays(start, end time.Time) int {
+	if start.IsZero() || end.IsZero() {
+		return 0
+	}
+	d := int(dayStartUTC(end).Sub(dayStartUTC(start)).Hours()/24) + 1
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// emptyDayKeys liste les jours de la fenêtre sans course. Au-delà de trois mois
+// le détail quotidien n'est plus lu : on ne remplit rien plutôt que d'expédier
+// des centaines de barres vides.
+func emptyDayKeys(start, end time.Time, days map[string]*weekAgg) []string {
+	if start.IsZero() || end.IsZero() || windowDays(start, end) > maxFilledDays {
+		return nil
+	}
+	var out []string
+	for d := dayStartUTC(start); !d.After(dayStartUTC(end)); d = d.AddDate(0, 0, 1) {
+		k := d.Format("2006-01-02")
+		if days[k] == nil {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// emptyWeekKeys liste les semaines de la fenêtre sans course : une semaine de
+// coupure doit se voir comme un trou, pas disparaître du graphique.
+func emptyWeekKeys(start, end time.Time, weeks map[string]*weekAgg) []string {
+	if start.IsZero() || end.IsZero() {
+		return nil
+	}
+	var out []string
+	for w := weekStartUTC(start); !w.After(weekStartUTC(end)); w = w.AddDate(0, 0, 7) {
+		k := w.Format("2006-01-02")
+		if weeks[k] == nil {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 func paceMinPerKmFromSpeed(distM, avgMS float64) float64 {

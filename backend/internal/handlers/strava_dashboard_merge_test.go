@@ -72,7 +72,7 @@ func TestDedupKeepsHeartRateFromLiveRun(t *testing.T) {
 		t.Fatalf("FC attendue %v, obtenu %v", hrBig, *merged[0].AvgHR)
 	}
 
-	day := strava.BuildDashboard(merged, "7d").Daily[0]
+	day := strava.BuildDashboard(merged, "7d", strava.DashboardWindow{}).Daily[0]
 	want := (hrBig*1310 + hrSmall*51) / (1310 + 51)
 	if day.AvgHR == nil || math.Abs(*day.AvgHR-want) > 0.1 {
 		t.Fatalf("FC du jour attendue ≈ %.1f, obtenu %v", want, day.AvgHR)

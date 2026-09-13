@@ -599,28 +599,24 @@ func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
 	if period == "" {
 		period = "30d"
 	}
-	var after *int64
 	now := time.Now().UTC()
-	switch period {
-	case "7d":
-		t := now.AddDate(0, 0, -7).Unix()
-		after = &t
-	case "30d":
-		t := now.AddDate(0, 0, -30).Unix()
-		after = &t
-	case "90d", "3m":
-		t := now.AddDate(0, 0, -90).Unix()
-		after = &t
-	case "365d", "1y":
-		t := now.AddDate(0, 0, -365).Unix()
-		after = &t
-	case "all":
-		after = nil
-	default:
+	windowDays, known := dashboardWindowDays(period)
+	if !known {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "période invalide : 7d, 30d, 90d, 365d ou all",
 		})
 		return
+	}
+
+	// Un total seul ne dit rien : 42 km, est-ce plus ou moins que d'habitude ?
+	// On remonte donc deux fenêtres en arrière pour pouvoir comparer, et on
+	// sépare les deux après coup.
+	var windowStart time.Time
+	var after *int64
+	if windowDays > 0 {
+		windowStart = now.AddDate(0, 0, -windowDays)
+		t := windowStart.AddDate(0, 0, -windowDays).Unix()
+		after = &t
 	}
 
 	var stravaRuns []strava.RunActivity
@@ -648,8 +644,49 @@ func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	combined := mergeStravaAndLiveRuns(stravaRuns, liveAs)
-	payload := strava.BuildDashboard(combined, period)
+	current, previous := splitDashboardWindow(combined, windowStart)
+	win := strava.DashboardWindow{Start: windowStart, End: now}
+	// « Tout l'historique » n'a pas de période précédente à laquelle se comparer.
+	if windowDays > 0 {
+		win.Previous = previous
+	}
+	payload := strava.BuildDashboard(current, period, win)
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// dashboardWindowDays traduit la période demandée en nombre de jours (0 = tout
+// l'historique). Le booléen dit si la période est reconnue.
+func dashboardWindowDays(period string) (int, bool) {
+	switch period {
+	case "7d":
+		return 7, true
+	case "30d":
+		return 30, true
+	case "90d", "3m":
+		return 90, true
+	case "365d", "1y":
+		return 365, true
+	case "all":
+		return 0, true
+	default:
+		return 0, false
+	}
+}
+
+// splitDashboardWindow sépare les courses de la fenêtre demandée de celles de la
+// fenêtre précédente, ramenées uniquement pour la comparaison.
+func splitDashboardWindow(runs []strava.RunActivity, start time.Time) (current, previous []strava.RunActivity) {
+	if start.IsZero() {
+		return runs, nil
+	}
+	for _, r := range runs {
+		if r.StartAt.Before(start) {
+			previous = append(previous, r)
+		} else {
+			current = append(current, r)
+		}
+	}
+	return current, previous
 }
 
 func (h *Handlers) StravaAuthorizeURL(w http.ResponseWriter, r *http.Request) {
