@@ -3,19 +3,30 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	Port               string
-	ListenHost         string // LISTEN_HOST : ex. 127.0.0.1 derrière nginx avec network_mode host
-	MongoURI           string
-	MongoDB            string
-	MongoForceIPv4     bool // MONGODB_FORCE_IPV4=1 (opt-in)
-	MongoTLS12Only     bool // MONGODB_TLS12_ONLY=1 (opt-in)
-	JWTSecret          string
+	Port           string
+	ListenHost     string // LISTEN_HOST : ex. 127.0.0.1 derrière nginx avec network_mode host
+	MongoURI       string
+	MongoDB        string
+	MongoForceIPv4 bool // MONGODB_FORCE_IPV4=1 (opt-in)
+	MongoTLS12Only bool // MONGODB_TLS12_ONLY=1 (opt-in)
+	JWTSecret      string
+	// AccessTokenTTL : durée de vie du JWT d’accès (AUTH_ACCESS_TTL_MINUTES).
+	// Reste à 7 jours par défaut : les versions déjà publiées de l’app ne
+	// savent pas rafraîchir, et un jeton court les déconnecterait à répétition.
+	// À raccourcir une fois le parc à jour.
+	AccessTokenTTL time.Duration
+	// RefreshTokenTTL : durée de vie d’un jeton de rafraîchissement
+	// (AUTH_REFRESH_TTL_DAYS). Chaque rotation repart pour cette durée, donc un
+	// usage régulier de l’app ne déconnecte jamais.
+	RefreshTokenTTL    time.Duration
 	StravaClientID     string
 	StravaClientSecret string
 	StravaRedirectURI  string
@@ -69,6 +80,8 @@ func Load() (*Config, error) {
 		MongoForceIPv4:     envBool("MONGODB_FORCE_IPV4"),
 		MongoTLS12Only:     envBool("MONGODB_TLS12_ONLY"),
 		JWTSecret:          os.Getenv("JWT_SECRET"),
+		AccessTokenTTL:     envDuration("AUTH_ACCESS_TTL_MINUTES", time.Minute, 7*24*60),
+		RefreshTokenTTL:    envDuration("AUTH_REFRESH_TTL_DAYS", 24*time.Hour, 90),
 		StravaClientID:     os.Getenv("STRAVA_CLIENT_ID"),
 		StravaClientSecret: os.Getenv("STRAVA_CLIENT_SECRET"),
 		StravaRedirectURI:  os.Getenv("STRAVA_REDIRECT_URI"),
@@ -197,6 +210,18 @@ func normalizePrimaryFrontendURL(raw string) string {
 		}
 	}
 	return trimmed[0]
+}
+
+// envDuration lit un entier positif dans l’environnement et le multiplie par
+// `unit`. Valeur absente, illisible ou nulle → `defUnits` unités.
+func envDuration(key string, unit time.Duration, defUnits int64) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			return time.Duration(n) * unit
+		}
+	}
+	return time.Duration(defUnits) * unit
 }
 
 // envBool : vrai si 1, true, yes (insensible à la casse).

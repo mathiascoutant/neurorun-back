@@ -1,6 +1,10 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -9,6 +13,29 @@ import (
 )
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
+
+// refreshTokenBytes : 32 octets d’aléa, soit 256 bits — hors de portée d’une
+// attaque par force brute, et assez court pour tenir dans un en-tête.
+const refreshTokenBytes = 32
+
+// NewRefreshToken renvoie un jeton opaque à remettre au client. Opaque et non
+// signé : contrairement à un JWT, il ne vaut que par sa présence en base, donc
+// une déconnexion le coupe pour de bon.
+func NewRefreshToken() (string, error) {
+	b := make([]byte, refreshTokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// HashRefreshToken : empreinte stockée en base. SHA-256 nu suffit ici — le
+// jeton est un aléa de 256 bits, pas un mot de passe : il n’y a rien à
+// deviner, donc rien à ralentir avec bcrypt.
+func HashRefreshToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
 
 func HashPassword(password string) (string, error) {
 	b, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

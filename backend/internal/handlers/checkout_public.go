@@ -26,9 +26,9 @@ func (h *Handlers) PublicOfferConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 type checkoutBody struct {
-	Plan            string `json:"plan"`
-	PromoCode       string `json:"promo_code"`
-	PaymentMethod   string `json:"payment_method"` // card | apple_pay — hérité ; le moyen de paiement réel est choisi dans le Payment Element Stripe.
+	Plan          string `json:"plan"`
+	PromoCode     string `json:"promo_code"`
+	PaymentMethod string `json:"payment_method"` // card | apple_pay — hérité ; le moyen de paiement réel est choisi dans le Payment Element Stripe.
 }
 
 func checkoutPriceEUR(cfg *models.OfferConfig, plan string) (float64, bool) {
@@ -128,11 +128,11 @@ func (h *Handlers) CheckoutPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	final := applyPromoPercent(base, pct)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"plan":            b.Plan,
-		"base_price_eur":  base,
+		"plan":             b.Plan,
+		"base_price_eur":   base,
 		"discount_percent": pct,
 		"final_price_eur":  final,
-		"email":           u.Email,
+		"email":            u.Email,
 	})
 }
 

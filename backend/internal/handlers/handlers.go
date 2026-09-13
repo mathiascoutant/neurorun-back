@@ -172,7 +172,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	token, err := auth.SignJWT(u.ID.Hex(), h.cfg.JWTSecret, 7*24*time.Hour)
+	sess, err := h.issueSession(r.Context(), u, deviceLabel(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token"})
 		return
@@ -186,10 +186,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"token": token,
-		"user":  userPublic(u, caps),
-	})
+	h.writeSession(w, http.StatusCreated, sess, u, caps)
 }
 
 type registerPaidBody struct {
@@ -327,7 +324,7 @@ func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
 
 	h.invalidateOfferCache()
 
-	token, err := auth.SignJWT(u.ID.Hex(), h.cfg.JWTSecret, 7*24*time.Hour)
+	sess, err := h.issueSession(r.Context(), u, deviceLabel(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token"})
 		return
@@ -336,10 +333,7 @@ func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
 	h.notifyAdminsSignup(u)
 
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"token": token,
-		"user":  userPublic(u, caps),
-	})
+	h.writeSession(w, http.StatusCreated, sess, u, caps)
 }
 
 var registerEmailRx = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
@@ -400,7 +394,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = h.db.SetUserLastSeenNow(r.Context(), u.ID)
 
-	token, err := auth.SignJWT(u.ID.Hex(), h.cfg.JWTSecret, 7*24*time.Hour)
+	sess, err := h.issueSession(r.Context(), u, deviceLabel(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token"})
 		return
@@ -411,10 +405,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"token": token,
-		"user":  userPublic(u, caps),
-	})
+	h.writeSession(w, http.StatusOK, sess, u, caps)
 }
 
 func userPublic(u *models.User, capabilities map[string]bool) map[string]any {
@@ -531,6 +522,11 @@ func (h *Handlers) PatchMe(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
 			return
 		}
+		// Changer son mot de passe doit chasser qui serait entré avec l’ancien :
+		// les sessions longues des autres appareils tombent.
+		if err := h.db.RevokeAllRefreshTokensForUser(r.Context(), u.ID); err != nil {
+			log.Printf("changement mot de passe %s: révocation sessions: %v", u.ID.Hex(), err)
+		}
 	}
 	refreshed, err := h.db.FindUserByID(r.Context(), u.ID)
 	if err != nil {
@@ -576,6 +572,9 @@ func (h *Handlers) DeleteMyAccount(w http.ResponseWriter, r *http.Request) {
 			"error": "impossible d’arrêter ton abonnement pour le moment — réessaie dans quelques instants",
 		})
 		return
+	}
+	if err := h.db.RevokeAllRefreshTokensForUser(r.Context(), u.ID); err != nil {
+		log.Printf("suppression compte %s: révocation sessions: %v", u.ID.Hex(), err)
 	}
 	if err := h.db.DeleteUserCascade(r.Context(), u.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "suppression impossible"})
@@ -1421,18 +1420,18 @@ func (h *Handlers) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hdr := r.Header.Get("Authorization")
 		if !strings.HasPrefix(strings.ToLower(hdr), "bearer ") {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "non authentifié"})
+			writeTokenRejected(w, "non authentifié")
 			return
 		}
 		token := strings.TrimSpace(hdr[7:])
 		claims, err := auth.ParseJWT(token, h.cfg.JWTSecret)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "token invalide"})
+			writeTokenRejected(w, "token invalide")
 			return
 		}
 		u, err := UserFromID(r.Context(), h.db, claims.UserID)
 		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "utilisateur introuvable"})
+			writeTokenRejected(w, "utilisateur introuvable")
 			return
 		}
 		if err != nil {
@@ -1456,6 +1455,10 @@ func (h *Handlers) Mount(r chi.Router) {
 	r.Post("/auth/register", h.Register)
 	r.Post("/auth/register-paid", h.RegisterPaidSignup)
 	r.Post("/auth/login", h.Login)
+	// Refresh et logout restent publics : à ce moment-là le jeton d’accès est
+	// souvent déjà expiré, et l’AuthMiddleware fermerait la porte.
+	r.Post("/auth/refresh", h.Refresh)
+	r.Post("/auth/logout", h.Logout)
 	r.Get("/strava/callback", h.StravaCallback)
 	r.Get("/public/offer-config", h.PublicOfferConfig)
 	r.Get("/public/payment-config", h.PublicPaymentConfig)

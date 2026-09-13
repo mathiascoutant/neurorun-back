@@ -82,20 +82,20 @@ func (h *Handlers) AdminStats(w http.ResponseWriter, r *http.Request) {
 	top, _ := h.db.TopUsersByActivity(ctx, 10)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"users_total":              total,
-		"users_last_7d":            recent,
-		"users_plan_standard":      nStd,
-		"users_plan_strava":        nStrava,
-		"users_plan_performance":   nPerf,
-		"signups_by_day":           signups,
-		"top_active_users":         top,
-		"mrr_estimated_eur":        math.Round(mrr*100) / 100,
-		"prices_eur":               cfg.PricesEUR,
-		"subscribers_strava":       nStrava,
-		"subscribers_performance":  nPerf,
-		"tier_order":               tierOrder,
-		"users_by_plan":            usersByPlan,
-		"tier_display_names":       cfg.TierDisplayNames,
+		"users_total":             total,
+		"users_last_7d":           recent,
+		"users_plan_standard":     nStd,
+		"users_plan_strava":       nStrava,
+		"users_plan_performance":  nPerf,
+		"signups_by_day":          signups,
+		"top_active_users":        top,
+		"mrr_estimated_eur":       math.Round(mrr*100) / 100,
+		"prices_eur":              cfg.PricesEUR,
+		"subscribers_strava":      nStrava,
+		"subscribers_performance": nPerf,
+		"tier_order":              tierOrder,
+		"users_by_plan":           usersByPlan,
+		"tier_display_names":      cfg.TierDisplayNames,
 	})
 }
 

@@ -45,6 +45,9 @@ type DB struct {
 	// vmaTests : historique des tests de VMA (6 min). La VMA courante est
 	// celle du test le plus récent.
 	vmaTests *mongo.Collection
+	// refreshTokens : sessions longue durée des appareils. Purgées
+	// automatiquement par un index TTL sur expires_at.
+	refreshTokens *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -101,6 +104,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	boosts := database.Collection("boosts")
 	pushTokens := database.Collection("push_tokens")
 	vmaTests := database.Collection("vma_tests")
+	refreshTokens := database.Collection("refresh_tokens")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -171,8 +175,23 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		Keys:    bson.D{{Key: "token", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
-	_, _ = pushTokens.Indexes().CreateOne(ctx, mongo.IndexModel{
+	// Le hash est la clé de lecture du refresh : unique, et seul index consulté
+	// sur le chemin chaud.
+	_, _ = refreshTokens.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "token_hash", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	_, _ = refreshTokens.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "family_id", Value: 1}},
+	})
+	_, _ = refreshTokens.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "user_id", Value: 1}},
+	})
+	// Purge automatique : Mongo supprime la ligne à son expiration, la
+	// collection ne grossit donc pas avec les rotations.
+	_, _ = refreshTokens.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "expires_at", Value: 1}},
+		Options: options.Index().SetExpireAfterSeconds(0),
 	})
 	return &DB{
 		client:        client,
@@ -192,6 +211,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		friendships:        friendships,
 		boosts:             boosts,
 		pushTokens:         pushTokens,
+		refreshTokens:      refreshTokens,
 	}, nil
 }
 
