@@ -176,7 +176,7 @@ func bestRunOf(r RunActivity) *DashboardBestRun {
 	return &DashboardBestRun{
 		Date:         r.StartAt.UTC().Format(time.RFC3339),
 		Km:           round2(r.DistanceM / 1000),
-		PaceMinPerKm: paceMinPerKmFromSpeed(r.DistanceM, r.AvgSpeed),
+		PaceMinPerKm: paceMinPerKm(r),
 	}
 }
 
@@ -219,8 +219,8 @@ func BuildDashboard(runs []RunActivity, periodKey string, win DashboardWindow) D
 			longest = &sorted[i]
 		}
 		if r.DistanceM/1000 >= minPaceRunKm {
-			pace := paceMinPerKmFromSpeed(r.DistanceM, r.AvgSpeed)
-			if pace > 0 && (fastest == nil || pace < paceMinPerKmFromSpeed(fastest.DistanceM, fastest.AvgSpeed)) {
+			pace := paceMinPerKm(r)
+			if pace > 0 && (fastest == nil || pace < paceMinPerKm(*fastest)) {
 				fastest = &sorted[i]
 			}
 		}
@@ -262,7 +262,7 @@ func BuildDashboard(runs []RunActivity, periodKey string, win DashboardWindow) D
 	var p5, p10, ph, pm, allPace []DashboardPacePoint
 	for _, r := range sorted {
 		km := r.DistanceM / 1000
-		pace := paceMinPerKmFromSpeed(r.DistanceM, r.AvgSpeed)
+		pace := paceMinPerKm(r)
 		if pace <= 0 {
 			continue
 		}
@@ -387,9 +387,24 @@ func lastN(pts []DashboardPacePoint, n int) []DashboardPacePoint {
 	return pts[len(pts)-n:]
 }
 
-func paceMinPerKmFromSpeed(distM, avgMS float64) float64 {
-	if avgMS <= 0 || distM < 100 {
+// paceMinPerKm calcule l'allure d'une sortie : distance divisée par temps de
+// mouvement.
+//
+// L'ancienne version partait de la vitesse moyenne renvoyée par Strava, qui est
+// reconstituée depuis le flux et diffère de quelques millièmes de la division
+// directe. Résultat : une même course s'affichait « 4:44 » sur le tableau de
+// bord et « 4:45 » sur son écran de détail, qui lui divise distance par temps.
+// Une seule définition, celle que l'utilisateur peut refaire de tête.
+// La vitesse moyenne reste le recours quand le temps de mouvement manque.
+func paceMinPerKm(r RunActivity) float64 {
+	if r.DistanceM < 100 {
 		return 0
 	}
-	return round2(1000 / (60 * avgMS))
+	if r.MovingSec > 0 {
+		return round2(float64(r.MovingSec) / 60 / (r.DistanceM / 1000))
+	}
+	if r.AvgSpeed > 0 {
+		return round2(1000 / (60 * r.AvgSpeed))
+	}
+	return 0
 }
