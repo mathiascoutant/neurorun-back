@@ -208,6 +208,32 @@ type runHistoryFeedRow struct {
 	m  map[string]any
 }
 
+// paceSecPerKm donne l'allure d'une sortie en secondes par kilomètre, à partir
+// de la distance et du temps de mouvement.
+//
+// Chaque surface avait sa propre source : l'historique partait de la vitesse
+// moyenne renvoyée par Strava, le tableau de bord divisait distance par temps.
+// Les deux diffèrent de quelques millièmes, assez pour qu'une même sortie
+// s'affiche « 4:44 » à un endroit et « 4:45 » à l'autre. `fallback` sert quand
+// le temps de mouvement manque.
+func paceSecPerKm(distM, movingSec, fallback float64) float64 {
+	if distM >= 100 && movingSec > 0 {
+		return movingSec / (distM / 1000)
+	}
+	if fallback > 0 && !math.IsInf(fallback, 0) {
+		return fallback
+	}
+	return 0
+}
+
+// nonZero évite une division par zéro dans le calcul de repli.
+func nonZero(v float64) float64 {
+	if v == 0 {
+		return math.Inf(1)
+	}
+	return v
+}
+
 // RunHistoryFeed renvoie une page d’historique mélangé : courses NeuroRun + courses Strava si le compte est lié.
 // Query: limit (défaut 10, max 30), before (RFC3339 / RFC3339Nano, curseur exclusif pour la pagination).
 func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
@@ -276,17 +302,14 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 				"created_at":          at.Format(time.RFC3339),
 				"distance_m":          lr.DistanceM,
 				"moving_sec":          lr.MovingSec,
-				"avg_pace_sec_per_km": lr.AvgPaceSecPerKm,
+				"avg_pace_sec_per_km": paceSecPerKm(lr.DistanceM, float64(lr.MovingSec), lr.AvgPaceSecPerKm),
 				"split_count":         len(lr.Splits),
 			},
 		})
 	}
 	for _, ar := range stravaActs {
 		at := ar.StartAt.UTC()
-		pace := 0.0
-		if ar.AvgSpeed > 0 {
-			pace = 1000.0 / ar.AvgSpeed
-		}
+		pace := paceSecPerKm(ar.DistanceM, float64(ar.MovingSec), 1000.0/nonZero(ar.AvgSpeed))
 		row := map[string]any{
 			"source":              "strava",
 			"strava_activity_id":  ar.ID,

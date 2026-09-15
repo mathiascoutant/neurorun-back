@@ -401,10 +401,18 @@ func paceMinPerKm(r RunActivity) float64 {
 		return 0
 	}
 	if r.MovingSec > 0 {
-		return round2(float64(r.MovingSec) / 60 / (r.DistanceM / 1000))
+		return round3(float64(r.MovingSec) / 60 / (r.DistanceM / 1000))
 	}
 	if r.AvgSpeed > 0 {
-		return round2(1000 / (60 * r.AvgSpeed))
+		return round3(1000 / (60 * r.AvgSpeed))
 	}
 	return 0
+}
+
+// round3 : au centième de minute près, l'arrondi perd jusqu'à trois dixièmes de
+// seconde — assez pour faire basculer la seconde affichée et rouvrir l'écart
+// avec l'historique, qui lui travaille en secondes. Au millième, les deux
+// tombent toujours sur la même seconde.
+func round3(n float64) float64 {
+	return math.Round(n*1000) / 1000
 }
