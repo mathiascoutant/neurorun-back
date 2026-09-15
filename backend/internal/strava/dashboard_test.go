@@ -21,7 +21,8 @@ func run(day time.Time, km float64, movingSec int) RunActivity {
 // jour couru au lieu d'une moyenne par jour de la période.
 func TestDailyFillsRestDays(t *testing.T) {
 	end := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
-	start := end.AddDate(0, 0, -7)
+	/* Fenêtre calée sur des jours pleins, comme la construit le handler. */
+	start := time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6)
 	runs := []RunActivity{
 		run(end.AddDate(0, 0, -5), 10, 3000),
 		run(end.AddDate(0, 0, -1), 5, 1500),
@@ -29,8 +30,8 @@ func TestDailyFillsRestDays(t *testing.T) {
 
 	got := BuildDashboard(runs, "7d", DashboardWindow{Start: start, End: end})
 
-	if len(got.Daily) != 8 {
-		t.Fatalf("8 journées attendues (7 jours de fenêtre, bornes incluses), obtenu %d", len(got.Daily))
+	if len(got.Daily) != 7 {
+		t.Fatalf("« 7 derniers jours » doit donner sept barres, obtenu %d", len(got.Daily))
 	}
 	if got.ActiveDays != 2 {
 		t.Fatalf("2 jours actifs attendus, obtenu %d", got.ActiveDays)
@@ -44,8 +45,8 @@ func TestDailyFillsRestDays(t *testing.T) {
 			zeros++
 		}
 	}
-	if zeros != 6 {
-		t.Fatalf("6 jours de repos attendus à zéro, obtenu %d", zeros)
+	if zeros != 5 {
+		t.Fatalf("5 jours de repos attendus à zéro, obtenu %d", zeros)
 	}
 }
 
@@ -72,7 +73,7 @@ func TestPreviousTotalsAndBestRuns(t *testing.T) {
 	runs := []RunActivity{
 		run(end.AddDate(0, 0, -20), 12, 3600), // la plus longue
 		run(end.AddDate(0, 0, -2), 5, 1200),   // la plus rapide : 4 min/km
-		run(end.AddDate(0, 0, -1), 0.4, 100),  // trop courte pour un record
+		run(end.AddDate(0, 0, -1), 1.5, 315),  // 3'30/km, mais trop courte pour un record d'allure
 	}
 	prev := []RunActivity{run(start.AddDate(0, 0, -5), 8, 2400)}
 
@@ -87,8 +88,8 @@ func TestPreviousTotalsAndBestRuns(t *testing.T) {
 	if got.FastestRun == nil || got.FastestRun.Km != 5 {
 		t.Fatalf("sortie la plus rapide attendue à 5 km, obtenu %+v", got.FastestRun)
 	}
-	if got.LastRun == nil || got.LastRun.Km != 0.4 {
-		t.Fatalf("dernière course attendue (0,4 km), obtenu %+v", got.LastRun)
+	if got.LastRun == nil || got.LastRun.Km != 1.5 {
+		t.Fatalf("dernière course attendue (1,5 km), obtenu %+v", got.LastRun)
 	}
 }
 

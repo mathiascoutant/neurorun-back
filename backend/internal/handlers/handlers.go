@@ -614,7 +614,13 @@ func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
 	var windowStart time.Time
 	var after *int64
 	if windowDays > 0 {
-		windowStart = now.AddDate(0, 0, -windowDays)
+		// Fenêtre calée sur des journées entières : « 7 derniers jours » doit
+		// donner sept barres, pas huit. Partir de l'instant présent moins sept
+		// fois vingt-quatre heures fait déborder la fenêtre sur une huitième
+		// journée entamée — le graphique se met alors à défiler et rogne sa
+		// première barre.
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		windowStart = today.AddDate(0, 0, -(windowDays - 1))
 		t := windowStart.AddDate(0, 0, -windowDays).Unix()
 		after = &t
 	}

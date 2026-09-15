@@ -61,6 +61,11 @@ type DashboardPayload struct {
 	Pace10k      []DashboardPacePoint `json:"pace_10k"`
 	PaceHalf     []DashboardPacePoint `json:"pace_half"`
 	PaceMarathon []DashboardPacePoint `json:"pace_marathon"`
+	// Allure de chaque sortie, dans l'ordre chronologique. Les quatre listes
+	// par distance ci-dessus ne couvrent que les sorties tombant dans une
+	// tranche, et se retrouvent souvent vides ou à deux points sur une période
+	// courte : celle-ci est toujours exploitable.
+	PaceRuns []DashboardPacePoint `json:"pace_runs"`
 
 	// Longueur de la fenêtre en jours et nombre de jours où au moins une course
 	// a eu lieu : « 12 jours actifs sur 30 » dit la régularité, que le total de
@@ -84,9 +89,16 @@ type DashboardPayload struct {
 // ne lit, et le front bascule de toute façon sur la maille hebdomadaire.
 const maxFilledDays = 92
 
-// Une sortie plus courte ne dit rien d'une allure : un aller-retour à la boîte
-// aux lettres ne doit pas devenir un record personnel.
-const minRunKmForBest = 1.0
+// Plafond de la courbe d'allure : au-delà, les points se touchent et la charge
+// utile enfle pour rien. On garde les plus récents.
+const maxPaceRuns = 300
+
+// Seuil de la « meilleure allure ». Plus une sortie est courte, plus elle se
+// court vite : sans plancher, le record est systématiquement le sprint de
+// 1,5 km du mardi, et la tuile ne dit plus rien d'autre que « ta sortie la plus
+// courte ». Trois kilomètres est le premier palier où l'allure devient
+// comparable d'une sortie à l'autre.
+const minPaceRunKm = 3.0
 
 func weekStartUTC(t time.Time) time.Time {
 	t = t.UTC()
@@ -202,10 +214,11 @@ func BuildDashboard(runs []RunActivity, periodKey string, win DashboardWindow) D
 		}
 		days[ds].add(r)
 
-		if r.DistanceM/1000 >= minRunKmForBest {
-			if longest == nil || r.DistanceM > longest.DistanceM {
-				longest = &sorted[i]
-			}
+		// La plus longue est un fait brut : aucun plancher à lui imposer.
+		if longest == nil || r.DistanceM > longest.DistanceM {
+			longest = &sorted[i]
+		}
+		if r.DistanceM/1000 >= minPaceRunKm {
 			pace := paceMinPerKmFromSpeed(r.DistanceM, r.AvgSpeed)
 			if pace > 0 && (fastest == nil || pace < paceMinPerKmFromSpeed(fastest.DistanceM, fastest.AvgSpeed)) {
 				fastest = &sorted[i]
@@ -246,7 +259,7 @@ func BuildDashboard(runs []RunActivity, periodKey string, win DashboardWindow) D
 		})
 	}
 
-	var p5, p10, ph, pm []DashboardPacePoint
+	var p5, p10, ph, pm, allPace []DashboardPacePoint
 	for _, r := range sorted {
 		km := r.DistanceM / 1000
 		pace := paceMinPerKmFromSpeed(r.DistanceM, r.AvgSpeed)
@@ -258,6 +271,7 @@ func BuildDashboard(runs []RunActivity, periodKey string, win DashboardWindow) D
 			PaceMinPerKm: pace,
 			DistanceKm:   round2(km),
 		}
+		allPace = append(allPace, pt)
 		switch {
 		case km >= 4.2 && km <= 6.8:
 			p5 = append(p5, pt)
@@ -281,7 +295,8 @@ func BuildDashboard(runs []RunActivity, periodKey string, win DashboardWindow) D
 		Pace10k:      p10,
 		PaceHalf:     ph,
 		PaceMarathon: pm,
-		PeriodDays:   periodDays(win, start, end),
+		PaceRuns:     lastN(allPace, maxPaceRuns),
+		PeriodDays:   windowDays(start, end),
 		ActiveDays:   activeDays,
 		ElevGainM:    math.Round(elevGain),
 		AvgHR:        whole.avgHR(),
@@ -319,21 +334,6 @@ func windowBounds(win DashboardWindow, sorted []RunActivity) (time.Time, time.Ti
 		return time.Time{}, time.Time{}
 	}
 	return start, end
-}
-
-// periodDays donne la longueur de la période telle qu'elle est annoncée à
-// l'utilisateur : « 30 derniers jours » doit se lire « sur 30 », pas « sur 31 »
-// parce que les deux bornes tombent dans des journées différentes. Sans fenêtre
-// fournie — « tout l'historique » — on compte les jours couverts par les courses.
-func periodDays(win DashboardWindow, start, end time.Time) int {
-	if win.Start.IsZero() {
-		return windowDays(start, end)
-	}
-	d := int(math.Round(end.Sub(start).Hours() / 24))
-	if d < 1 {
-		return 1
-	}
-	return d
 }
 
 func windowDays(start, end time.Time) int {
@@ -378,6 +378,13 @@ func emptyWeekKeys(start, end time.Time, weeks map[string]*weekAgg) []string {
 		}
 	}
 	return out
+}
+
+func lastN(pts []DashboardPacePoint, n int) []DashboardPacePoint {
+	if len(pts) <= n {
+		return pts
+	}
+	return pts[len(pts)-n:]
 }
 
 func paceMinPerKmFromSpeed(distM, avgMS float64) float64 {
