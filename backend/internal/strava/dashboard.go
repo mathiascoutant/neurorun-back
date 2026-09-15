@@ -93,6 +93,13 @@ const maxFilledDays = 92
 // utile enfle pour rien. On garde les plus récents.
 const maxPaceRuns = 300
 
+// Borne de plausibilité de la courbe d'allure, dans le même esprit que les
+// bornes cardio du front : au-delà de douze minutes au kilomètre — moins de
+// 5 km/h — on marche, on ne court pas. Un seul point de ce genre étire l'axe du
+// simple au triple et tasse toutes les vraies courses dans le bas du cadre, où
+// plus aucun écart ne se lit.
+const maxRunPaceMinPerKm = 12.0
+
 // Seuil de la « meilleure allure ». Plus une sortie est courte, plus elle se
 // court vite : sans plancher, le record est systématiquement le sprint de
 // 1,5 km du mardi, et la tuile ne dit plus rien d'autre que « ta sortie la plus
@@ -271,7 +278,9 @@ func BuildDashboard(runs []RunActivity, periodKey string, win DashboardWindow) D
 			PaceMinPerKm: pace,
 			DistanceKm:   round2(km),
 		}
-		allPace = append(allPace, pt)
+		if pace <= maxRunPaceMinPerKm {
+			allPace = append(allPace, pt)
+		}
 		switch {
 		case km >= 4.2 && km <= 6.8:
 			p5 = append(p5, pt)
