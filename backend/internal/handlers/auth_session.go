@@ -165,6 +165,14 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Avant-première : la session longue s’arrête ici. On révoque la lignée — sinon les autres
+	// appareils du compte continueraient de tourner jusqu’à expiration de leur jeton d’accès.
+	if msg := h.betaLock(r.Context(), u); msg != "" {
+		_ = h.db.RevokeRefreshFamily(r.Context(), old.FamilyID)
+		writeSessionExpired(w, msg)
+		return
+	}
+
 	access, err := auth.SignJWT(u.ID.Hex(), h.cfg.JWTSecret, h.cfg.AccessTokenTTL)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token"})

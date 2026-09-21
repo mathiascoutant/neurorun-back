@@ -38,3 +38,30 @@ func (d *DB) UpsertOfferConfig(ctx context.Context, cfg models.OfferConfig) erro
 	)
 	return err
 }
+
+const betaConfigKey = "beta_config"
+
+func (d *DB) GetBetaConfig(ctx context.Context) (models.BetaConfig, error) {
+	var doc struct {
+		Value models.BetaConfig `bson:"value"`
+	}
+	err := d.settings.FindOne(ctx, bson.M{"_id": betaConfigKey}).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return models.DefaultBetaConfig(), nil
+	}
+	if err != nil {
+		return models.BetaConfig{}, err
+	}
+	doc.Value.MergeDefaults()
+	return doc.Value, nil
+}
+
+func (d *DB) UpsertBetaConfig(ctx context.Context, cfg models.BetaConfig) error {
+	cfg.MergeDefaults()
+	_, err := d.settings.UpdateOne(ctx,
+		bson.M{"_id": betaConfigKey},
+		bson.M{"$set": bson.M{"value": cfg}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}

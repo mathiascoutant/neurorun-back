@@ -99,3 +99,39 @@ func (c *OfferConfig) CapabilitiesForPlan(plan string) map[string]bool {
 		"circuit_tracks":   tracks,
 	}
 }
+
+// BetaConfig : verrou « avant-première ». Tant que Enabled est faux, rien ne change ; une fois
+// activé, seuls les comptes portant `beta_access` (et les administrateurs) peuvent ouvrir une
+// session — les autres lisent Message à la place de l’écran d’accueil.
+//
+// Le document vit en base et se pilote depuis la console admin : l’app installée n’a pas à
+// changer d’une ligne, elle affiche déjà tel quel le champ `error` renvoyé par l’API.
+type BetaConfig struct {
+	Enabled bool `json:"enabled" bson:"enabled"`
+	// Message : texte montré à un compte non invité qui tente de se connecter.
+	Message string `json:"message" bson:"message"`
+}
+
+// DefaultBetaMessage : formulation par défaut, modifiable depuis l’admin.
+const DefaultBetaMessage = "NeuroRun est en avant-première, réservée aux testeurs invités. Écris-nous sur neurorun.fr pour rejoindre la liste."
+
+// BetaMessageMaxLen : l’app iOS affiche le message tel quel, mais remplace par une erreur
+// générique tout texte de plus de 400 caractères (garde-fou contre une page HTML renvoyée par
+// un proxy). On plafonne bien en deçà : un bandeau de connexion n’a pas à être un paragraphe.
+const BetaMessageMaxLen = 280
+
+func DefaultBetaConfig() BetaConfig {
+	return BetaConfig{Enabled: false, Message: DefaultBetaMessage}
+}
+
+// MergeDefaults : un message vide serait un bandeau vide côté app — on retombe sur le défaut,
+// et on tronque ce qui dépasse la limite d’affichage.
+func (c *BetaConfig) MergeDefaults() {
+	c.Message = strings.TrimSpace(c.Message)
+	if c.Message == "" {
+		c.Message = DefaultBetaMessage
+	}
+	if r := []rune(c.Message); len(r) > BetaMessageMaxLen {
+		c.Message = strings.TrimSpace(string(r[:BetaMessageMaxLen]))
+	}
+}

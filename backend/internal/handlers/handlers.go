@@ -43,6 +43,10 @@ type Handlers struct {
 	offerMu     sync.RWMutex
 	offerCache  *models.OfferConfig
 	offerExpiry time.Time
+
+	betaMu     sync.RWMutex
+	betaCache  *models.BetaConfig
+	betaExpiry time.Time
 }
 
 func New(cfg *config.Config, db *store.DB) *Handlers {
@@ -143,6 +147,13 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Avant-première : on refuse avant de créer quoi que ce soit. Un compte créé puis bloqué à
+	// la connexion serait un compte fantôme de plus dans les statistiques.
+	if msg := h.betaLock(r.Context(), nil); msg != "" {
+		writeBetaLocked(w, msg)
+		return
+	}
+
 	hash, err := auth.HashPassword(b.Password)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur serveur"})
@@ -207,6 +218,12 @@ func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
 	var b registerPaidBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	// Avant-première : mieux vaut refuser l’inscription payante que d’encaisser un abonnement
+	// que son titulaire ne pourrait pas utiliser.
+	if msg := h.betaLock(r.Context(), nil); msg != "" {
+		writeBetaLocked(w, msg)
 		return
 	}
 	b.Email = strings.TrimSpace(strings.ToLower(b.Email))
@@ -392,6 +409,12 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "identifiants invalides"})
 		return
 	}
+	// Après le mot de passe, jamais avant : sinon le message d’avant-première dirait à un
+	// inconnu quelles adresses ont un compte ici.
+	if msg := h.betaLock(r.Context(), u); msg != "" {
+		writeBetaLocked(w, msg)
+		return
+	}
 	_ = h.db.SetUserLastSeenNow(r.Context(), u.ID)
 
 	sess, err := h.issueSession(r.Context(), u, deviceLabel(r))
@@ -420,6 +443,7 @@ func userPublic(u *models.User, capabilities map[string]bool) map[string]any {
 		"created_at":    u.CreatedAt.Format(time.RFC3339),
 		"role":          u.EffectiveRole(),
 		"plan":          u.EffectivePlan(),
+		"beta_access":   u.BetaAccess,
 	}
 	if capabilities != nil {
 		m["capabilities"] = capabilities
@@ -1481,6 +1505,12 @@ func (h *Handlers) AuthMiddleware(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur serveur"})
 			return
 		}
+		// Session ouverte avant l’activation du verrou : on la clôt par le circuit que le
+		// client connaît déjà (401 → tentative de refresh → déconnexion), pas par un 403.
+		if msg := h.betaLock(r.Context(), u); msg != "" {
+			writeTokenRejected(w, msg)
+			return
+		}
 		_ = h.db.TouchUserLastSeenIfStale(r.Context(), u.ID, 3*time.Minute)
 		ctx := context.WithValue(r.Context(), ctxUser{}, u)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -1525,6 +1555,8 @@ func (h *Handlers) Mount(r chi.Router) {
 		ar.Delete("/promo-codes/{id}", h.AdminDeletePromo)
 		ar.Get("/offer-config", h.AdminGetOfferConfig)
 		ar.Put("/offer-config", h.AdminPutOfferConfig)
+		ar.Get("/beta-config", h.AdminGetBetaConfig)
+		ar.Put("/beta-config", h.AdminPutBetaConfig)
 		ar.Get("/notifications", h.AdminListNotifications)
 		ar.Post("/notifications/read", h.AdminMarkNotificationsRead)
 		ar.Post("/notifications/test", h.AdminSendTestNotification)

@@ -157,6 +157,8 @@ func (h *Handlers) AdminGetUser(w http.ResponseWriter, r *http.Request) {
 type adminPatchUserBody struct {
 	Role *string `json:"role"`
 	Plan *string `json:"plan"`
+	// BetaAccess : invitation à l’avant-première. Absent = inchangé.
+	BetaAccess *bool `json:"beta_access"`
 }
 
 func (h *Handlers) AdminPatchUser(w http.ResponseWriter, r *http.Request) {
@@ -192,17 +194,29 @@ func (h *Handlers) AdminPatchUser(w http.ResponseWriter, r *http.Request) {
 		}
 		planPtr = &pk
 	}
-	if rolePtr == nil && planPtr == nil {
+	if rolePtr == nil && planPtr == nil && b.BetaAccess == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "rien à modifier"})
 		return
 	}
-	if err := h.db.UpdateUserRolePlan(r.Context(), oid, rolePtr, planPtr); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+	if rolePtr != nil || planPtr != nil {
+		if err := h.db.UpdateUserRolePlan(r.Context(), oid, rolePtr, planPtr); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour"})
-		return
+	}
+	if b.BetaAccess != nil {
+		if err := h.db.SetUserBetaAccess(r.Context(), oid, *b.BetaAccess); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour"})
+			return
+		}
 	}
 	u, err := h.db.FindUserByID(r.Context(), oid)
 	if err != nil {
@@ -407,6 +421,47 @@ func (h *Handlers) AdminGetOfferConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.MergeDefaults()
 	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (h *Handlers) AdminGetBetaConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := h.db.GetBetaConfig(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
+		return
+	}
+	cfg.MergeDefaults()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":         cfg.Enabled,
+		"message":         cfg.Message,
+		"message_max_len": models.BetaMessageMaxLen,
+	})
+}
+
+// AdminPutBetaConfig : l’interrupteur d’avant-première.
+//
+// Activer ferme la porte à tout le monde sauf aux invités et aux administrateurs, y compris aux
+// sessions déjà ouvertes — l’app les renvoie à l’écran de connexion au prochain appel.
+func (h *Handlers) AdminPutBetaConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "PUT"})
+		return
+	}
+	var cfg models.BetaConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json"})
+		return
+	}
+	cfg.MergeDefaults()
+	if err := h.db.UpsertBetaConfig(r.Context(), cfg); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde"})
+		return
+	}
+	h.invalidateBetaCache()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":         cfg.Enabled,
+		"message":         cfg.Message,
+		"message_max_len": models.BetaMessageMaxLen,
+	})
 }
 
 func (h *Handlers) AdminPutOfferConfig(w http.ResponseWriter, r *http.Request) {

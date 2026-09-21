@@ -21,6 +21,9 @@ type UserListItem struct {
 	StravaLinked bool       `json:"strava_linked"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
+	// BetaAccess : invité à l’avant-première. Toujours renvoyé, même faux : l’écran
+	// d’admin coche une case, et un champ absent s’y lirait comme « inconnu ».
+	BetaAccess bool `json:"beta_access"`
 }
 
 func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, error) {
@@ -33,7 +36,7 @@ func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, 
 		SetLimit(limit).
 		SetProjection(bson.M{
 			"email": 1, "created_at": 1, "role": 1, "plan": 1, "last_seen_at": 1,
-			"strava.access_token": 1,
+			"beta_access": 1, "strava.access_token": 1,
 		})
 	cur, err := d.users.Find(ctx, bson.M{}, opts)
 	if err != nil {
@@ -49,6 +52,7 @@ func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, 
 			Plan       string             `bson:"plan"`
 			CreatedAt  time.Time          `bson:"created_at"`
 			LastSeenAt *time.Time         `bson:"last_seen_at,omitempty"`
+			BetaAccess bool               `bson:"beta_access"`
 			Strava     *struct {
 				AccessToken string `bson:"access_token"`
 			} `bson:"strava,omitempty"`
@@ -66,6 +70,7 @@ func (d *DB) ListUsers(ctx context.Context, skip, limit int64) ([]UserListItem, 
 			StravaLinked: linked,
 			CreatedAt:    raw.CreatedAt,
 			LastSeenAt:   raw.LastSeenAt,
+			BetaAccess:   raw.BetaAccess,
 		})
 	}
 	if out == nil {
@@ -108,6 +113,18 @@ func (d *DB) UpdateUserRolePlan(ctx context.Context, id primitive.ObjectID, role
 		return nil
 	}
 	res, err := d.users.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": set})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetUserBetaAccess ouvre ou ferme l’accès d’un compte pendant l’avant-première.
+func (d *DB) SetUserBetaAccess(ctx context.Context, id primitive.ObjectID, allowed bool) error {
+	res, err := d.users.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"beta_access": allowed}})
 	if err != nil {
 		return err
 	}

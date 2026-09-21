@@ -88,6 +88,9 @@ type User struct {
 	CreatedAt time.Time     `bson:"created_at" json:"created_at"`
 	// LastSeenAt : dernière activité sur l’API (connexion ou requête authentifiée récente).
 	LastSeenAt *time.Time `bson:"last_seen_at,omitempty" json:"last_seen_at,omitempty"`
+	// BetaAccess : compte invité à l’avant-première (admin → Avant-première). Sans effet tant
+	// que le verrou n’est pas activé ; seul comptera alors ce drapeau.
+	BetaAccess bool `bson:"beta_access,omitempty" json:"beta_access"`
 }
 
 func (u *User) EffectiveRole() string {
@@ -105,6 +108,14 @@ func (u *User) EffectivePlan() string {
 		return u.Plan
 	}
 	return PlanStandard
+}
+
+// CanAccessDuringBeta : qui garde la porte ouverte quand l’avant-première est activée.
+//
+// Les administrateurs passent toujours : sans cette exception, activer le verrou fermerait
+// aussi la console qui permet de le désactiver, et il faudrait rouvrir la base à la main.
+func (u *User) CanAccessDuringBeta() bool {
+	return u.BetaAccess || u.EffectiveRole() == RoleAdmin
 }
 
 func (u *User) HasStrava() bool {
