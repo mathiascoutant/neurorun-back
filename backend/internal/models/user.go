@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -116,6 +117,18 @@ func (u *User) EffectivePlan() string {
 // aussi la console qui permet de le désactiver, et il faudrait rouvrir la base à la main.
 func (u *User) CanAccessDuringBeta() bool {
 	return u.BetaAccess || u.EffectiveRole() == RoleAdmin
+}
+
+// DisplayName met le nom au format « Mathias COUTANT ». Repli sur l’email si le compte n’a pas
+// de nom (impossible via l’inscription actuelle, mais les vieux comptes existent).
+func DisplayName(firstName, lastName, email string) string {
+	first := strings.TrimSpace(firstName)
+	last := strings.ToUpper(strings.TrimSpace(lastName))
+	full := strings.TrimSpace(first + " " + last)
+	if full == "" {
+		return email
+	}
+	return full
 }
 
 func (u *User) HasStrava() bool {

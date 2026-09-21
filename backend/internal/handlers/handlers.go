@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"runapp/internal/appstore"
 	"runapp/internal/auth"
 	"runapp/internal/config"
 	"runapp/internal/models"
@@ -47,6 +48,12 @@ type Handlers struct {
 	betaMu     sync.RWMutex
 	betaCache  *models.BetaConfig
 	betaExpiry time.Time
+
+	// App Store Connect : client construit à la première demande, et rapports déjà publiés
+	// gardés en mémoire — ils ne changent plus, et Apple limite les appels.
+	ascMu     sync.Mutex
+	ascClient *appstore.Client
+	ascCache  map[string]appDownloadsCacheEntry
 }
 
 func New(cfg *config.Config, db *store.DB) *Handlers {
@@ -193,7 +200,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	// part à l’activation de l’offre (`notifyAdminsPlanActivated`, après encaissement Stripe ou
 	// promo 100 %) ; un abandon au récap ne notifie donc rien.
 	if !isPaidPlan(b.IntendedPlan) {
-		h.notifyAdminsSignup(u)
+		h.notifyAdminsSignup(u, deviceLabel(r))
 	}
 
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
@@ -347,7 +354,7 @@ func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.notifyAdminsSignup(u)
+	h.notifyAdminsSignup(u, deviceLabel(r))
 
 	caps, _ := h.capabilitiesForUser(r.Context(), u)
 	h.writeSession(w, http.StatusCreated, sess, u, caps)
@@ -417,11 +424,15 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = h.db.SetUserLastSeenNow(r.Context(), u.ID)
 
-	sess, err := h.issueSession(r.Context(), u, deviceLabel(r))
+	device := deviceLabel(r)
+	sess, err := h.issueSession(r.Context(), u, device)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token"})
 		return
 	}
+	// Une connexion depuis un iPhone où l’app n’était jamais passée : c’est le signal le plus
+	// proche d’un téléchargement que le serveur puisse voir.
+	h.notifyAdminsFirstIOSSession(u, device, sess.refreshID)
 
 	caps, capErr := h.capabilitiesForUser(r.Context(), u)
 	if capErr != nil {
@@ -1555,6 +1566,8 @@ func (h *Handlers) Mount(r chi.Router) {
 		ar.Delete("/promo-codes/{id}", h.AdminDeletePromo)
 		ar.Get("/offer-config", h.AdminGetOfferConfig)
 		ar.Put("/offer-config", h.AdminPutOfferConfig)
+		ar.Get("/platforms", h.AdminPlatforms)
+		ar.Get("/app-downloads", h.AdminAppDownloads)
 		ar.Get("/beta-config", h.AdminGetBetaConfig)
 		ar.Put("/beta-config", h.AdminPutBetaConfig)
 		ar.Get("/notifications", h.AdminListNotifications)

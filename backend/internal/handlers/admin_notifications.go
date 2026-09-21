@@ -17,16 +17,9 @@ import (
 // notifyTimeout : borne l’envoi push, qui tourne hors du cycle de vie de la requête HTTP.
 const notifyTimeout = 20 * time.Second
 
-// adminDisplayName met le nom au format « Mathias COUTANT ». Repli sur l’email si le compte
-// n’a pas de nom (impossible via l’inscription actuelle, mais les vieux comptes existent).
+// adminDisplayName : nom affiché dans les notifications admin.
 func adminDisplayName(u *models.User) string {
-	first := strings.TrimSpace(u.FirstName)
-	last := strings.ToUpper(strings.TrimSpace(u.LastName))
-	full := strings.TrimSpace(first + " " + last)
-	if full == "" {
-		return u.Email
-	}
-	return full
+	return models.DisplayName(u.FirstName, u.LastName, u.Email)
 }
 
 // planLabel : libellé d’offre en majuscules tel qu’affiché dans la notification (« ALLURE »).
@@ -35,20 +28,24 @@ func (h *Handlers) planLabel(ctx context.Context, plan string) string {
 }
 
 // notifyAdminsSignup — nouveau compte, quelle que soit l’offre choisie à l’inscription.
-func (h *Handlers) notifyAdminsSignup(u *models.User) {
+//
+// `device` sert seulement à dire d’où vient l’inscription. Une inscription faite depuis l’app
+// est aussi une installation : le dire ici évite d’envoyer une seconde notification
+// « installation iOS » dans la même seconde, pour le même évènement.
+func (h *Handlers) notifyAdminsSignup(u *models.User, device string) {
 	plan := u.EffectivePlan()
-	h.notifyAdmins(models.AdminEventSignup, u, plan)
+	h.notifyAdmins(models.AdminEventSignup, u, plan, device)
 }
 
 // notifyAdminsPlanActivated — un compte existant bascule sur une offre payante (parcours web :
 // /auth/register crée le compte en standard, puis Stripe active l’offre).
 func (h *Handlers) notifyAdminsPlanActivated(u *models.User, plan string) {
-	h.notifyAdmins(models.AdminEventPlanActivated, u, plan)
+	h.notifyAdmins(models.AdminEventPlanActivated, u, plan, "")
 }
 
 // notifyAdmins persiste l’évènement puis pousse la notification, en tâche de fond : une panne
 // d’Expo ou de Mongo ne doit jamais faire échouer une inscription ou un paiement.
-func (h *Handlers) notifyAdmins(kind string, u *models.User, plan string) {
+func (h *Handlers) notifyAdmins(kind string, u *models.User, plan, device string) {
 	if u == nil {
 		return
 	}
@@ -59,7 +56,7 @@ func (h *Handlers) notifyAdmins(kind string, u *models.User, plan string) {
 
 		label := h.planLabel(ctx, plan)
 		name := adminDisplayName(&snapshot)
-		title, body := adminNotificationText(kind, name, plan, label)
+		title, body := adminNotificationText(kind, name, plan, label, device)
 
 		n := &models.AdminNotification{
 			Kind:      kind,
@@ -105,15 +102,32 @@ func (h *Handlers) notifyAdmins(kind string, u *models.User, plan string) {
 	}()
 }
 
-func adminNotificationText(kind, name, plan, label string) (title, body string) {
+func adminNotificationText(kind, name, plan, label, device string) (title, body string) {
 	paid := isPaidPlan(plan)
 	switch {
+	case kind == models.AdminEventIOSInstall:
+		return "Nouvelle installation iOS", name + " vient d’ouvrir l’app sur iPhone pour la première fois"
 	case kind == models.AdminEventPlanActivated:
 		return "Nouvelle offre payante", name + " vient de prendre l’offre " + label
 	case paid:
-		return "Nouvelle inscription payante", name + " vient de s’inscrire et de prendre l’offre " + label
+		return "Nouvelle inscription payante" + platformSuffix(device),
+			name + " vient de s’inscrire et de prendre l’offre " + label
 	default:
-		return "Nouvelle inscription", name + " vient de s’inscrire — offre " + label + " (gratuite)"
+		return "Nouvelle inscription" + platformSuffix(device),
+			name + " vient de s’inscrire — offre " + label + " (gratuite)"
+	}
+}
+
+// platformSuffix : d’où vient l’inscription, quand c’est une app. Rien pour le web, qui reste
+// le cas ordinaire et n’a pas besoin d’être nommé.
+func platformSuffix(device string) string {
+	switch models.PlatformFromDevice(device) {
+	case models.PlatformIOS:
+		return " (app iOS)"
+	case models.PlatformAndroid:
+		return " (app Android)"
+	default:
+		return ""
 	}
 }
 

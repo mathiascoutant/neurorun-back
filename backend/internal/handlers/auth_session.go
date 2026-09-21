@@ -44,6 +44,9 @@ type sessionTokens struct {
 	RefreshToken string
 	// ExpiresIn : durée de vie du JWT d’accès, en secondes.
 	ExpiresIn int
+	// refreshID : identifiant du jeton de rafraîchissement créé. Sert à distinguer la session
+	// qu’on vient d’ouvrir des précédentes ; nul si l’enregistrement a échoué.
+	refreshID primitive.ObjectID
 }
 
 // deviceLabel : libellé indicatif de l’appareil, pour retrouver une session dans
@@ -80,13 +83,15 @@ func (h *Handlers) issueSession(ctx context.Context, u *models.User, device stri
 		log.Printf("session %s: génération refresh: %v", u.ID.Hex(), err)
 		return out, nil
 	}
-	if _, err := h.db.CreateRefreshToken(
+	created, err := h.db.CreateRefreshToken(
 		ctx, u.ID, auth.HashRefreshToken(refresh), primitive.NilObjectID, h.cfg.RefreshTokenTTL, device,
-	); err != nil {
+	)
+	if err != nil {
 		log.Printf("session %s: enregistrement refresh: %v", u.ID.Hex(), err)
 		return out, nil
 	}
 	out.RefreshToken = refresh
+	out.refreshID = created.ID
 	return out, nil
 }
 

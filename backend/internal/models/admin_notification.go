@@ -13,6 +13,10 @@ const (
 	// AdminEventPlanActivated : passage à une offre payante après création du compte.
 	// C’est le cas nominal côté web : /auth/register crée le compte en standard, puis Stripe active l’offre.
 	AdminEventPlanActivated = "plan_activated"
+	// AdminEventIOSInstall : première session ouverte depuis l’app iOS sur un compte. C’est le
+	// signal le plus proche d’un téléchargement que le serveur puisse observer — l’App Store
+	// n’en notifie aucun, et une app installée sans être ouverte reste invisible.
+	AdminEventIOSInstall = "ios_install"
 )
 
 // AdminNotification : évènement destiné aux administrateurs. Historique consultable dans

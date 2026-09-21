@@ -32,6 +32,7 @@ func TestAdminNotificationText(t *testing.T) {
 		kind      string
 		plan      string
 		label     string
+		device    string
 		wantTitle string
 		wantBody  string
 	}{
@@ -59,10 +60,30 @@ func TestAdminNotificationText(t *testing.T) {
 			wantTitle: "Nouvelle inscription",
 			wantBody:  "Mathias COUTANT vient de s’inscrire — offre STANDARD (gratuite)",
 		},
+		{
+			// Une inscription faite depuis l’app le dit ici, plutôt que dans une seconde
+			// notification « installation » envoyée dans la même seconde.
+			name:      "inscription depuis l’app iOS",
+			kind:      models.AdminEventSignup,
+			plan:      models.PlanStandard,
+			label:     "STANDARD",
+			device:    "NeuroRun/1.0.1 CFNetwork/1568.100.1 Darwin/24.0.0",
+			wantTitle: "Nouvelle inscription (app iOS)",
+			wantBody:  "Mathias COUTANT vient de s’inscrire — offre STANDARD (gratuite)",
+		},
+		{
+			name:      "première ouverture de l’app sur un compte existant",
+			kind:      models.AdminEventIOSInstall,
+			plan:      models.PlanStandard,
+			label:     "STANDARD",
+			device:    "NeuroRun/1.0.1 CFNetwork/1568.100.1 Darwin/24.0.0",
+			wantTitle: "Nouvelle installation iOS",
+			wantBody:  "Mathias COUTANT vient d’ouvrir l’app sur iPhone pour la première fois",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			title, body := adminNotificationText(c.kind, "Mathias COUTANT", c.plan, c.label)
+			title, body := adminNotificationText(c.kind, "Mathias COUTANT", c.plan, c.label, c.device)
 			if title != c.wantTitle {
 				t.Errorf("title = %q, want %q", title, c.wantTitle)
 			}

@@ -63,6 +63,21 @@ type Config struct {
 	// Connect. Ce sont eux qui portent le prix côté iOS — l’admin NeuroRun ne pilote que le web.
 	AppleProductAllure      string
 	AppleProductPerformance string
+
+	// App Store Connect API — rapports de ventes (nombre de téléchargements). C’est une clé
+	// DIFFÉRENTE de la clé In-App Purchase ci-dessus : celle-ci se crée dans Users and Access →
+	// Integrations → App Store Connect API, avec le rôle Admin, Finance ou Sales. Sans elle,
+	// /api/admin/app-downloads répond « non configuré » et explique quoi renseigner.
+	AppleASCIssuerID string
+	AppleASCKeyID    string
+	AppleASCKeyP8    []byte
+	// AppleASCVendorNumber : numéro de vendeur, visible dans App Store Connect →
+	// Payments and Financial Reports. Sans lui Apple ne sait pas quel compte interroger.
+	AppleASCVendorNumber string
+	// AppleASCReportVersion : version du rapport SALES exigée par Apple. Elle change sans
+	// préavis (1_0 jusqu’en janvier 2024, 1_1 depuis) — d’où une variable plutôt qu’une
+	// constante, pour pouvoir suivre sans redéployer du code.
+	AppleASCReportVersion string
 }
 
 func Load() (*Config, error) {
@@ -103,6 +118,12 @@ func Load() (*Config, error) {
 		AppleSandbox:            envBool("APPLE_IAP_SANDBOX"),
 		AppleProductAllure:      getenv("APPLE_PRODUCT_ALLURE", "fr.neurorun.app.sub.allure"),
 		AppleProductPerformance: getenv("APPLE_PRODUCT_PERFORMANCE", "fr.neurorun.app.sub.performance"),
+
+		AppleASCIssuerID:      strings.TrimSpace(os.Getenv("APPLE_ASC_ISSUER_ID")),
+		AppleASCKeyID:         strings.TrimSpace(os.Getenv("APPLE_ASC_KEY_ID")),
+		AppleASCKeyP8:         applePrivateKey(os.Getenv("APPLE_ASC_KEY_P8")),
+		AppleASCVendorNumber:  strings.TrimSpace(os.Getenv("APPLE_ASC_VENDOR_NUMBER")),
+		AppleASCReportVersion: getenv("APPLE_ASC_REPORT_VERSION", "1_1"),
 	}
 	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
 		for _, o := range strings.Split(raw, ",") {
@@ -167,6 +188,31 @@ func applePrivateKey(raw string) []byte {
 		return nil
 	}
 	return []byte(strings.ReplaceAll(raw, `\n`, "\n"))
+}
+
+// AppleASCConfigured : les rapports de téléchargements sont interrogeables.
+func (c *Config) AppleASCConfigured() bool {
+	return c.AppleASCIssuerID != "" && c.AppleASCKeyID != "" &&
+		len(c.AppleASCKeyP8) > 0 && c.AppleASCVendorNumber != ""
+}
+
+// AppleASCMissing : ce qu’il reste à renseigner, nommé variable par variable. Un « non
+// configuré » sans la liste enverrait relire trois fichiers pour trouver laquelle manque.
+func (c *Config) AppleASCMissing() []string {
+	var out []string
+	if c.AppleASCIssuerID == "" {
+		out = append(out, "APPLE_ASC_ISSUER_ID")
+	}
+	if c.AppleASCKeyID == "" {
+		out = append(out, "APPLE_ASC_KEY_ID")
+	}
+	if len(c.AppleASCKeyP8) == 0 {
+		out = append(out, "APPLE_ASC_KEY_P8")
+	}
+	if c.AppleASCVendorNumber == "" {
+		out = append(out, "APPLE_ASC_VENDOR_NUMBER")
+	}
+	return out
 }
 
 // StravaConfigured indique si l’OAuth Strava peut être utilisé (les trois variables doivent être renseignées).
