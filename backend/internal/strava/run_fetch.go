@@ -27,6 +27,9 @@ type RunActivity struct {
 	MaxSpeedMps float64
 	ElevGainM   float64
 	AvgHR       *float64
+	// Trainer : tapis ou course virtuelle. La distance vient d'un capteur de foulée
+	// souvent mal étalonné, pas du GPS.
+	Trainer bool
 }
 
 func runActivityTypes(t string) bool {
@@ -187,6 +190,7 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 	}
 	name, _ := m["name"].(string)
 	id := int64(jsonFloat(m["id"]))
+	trainer, _ := m["trainer"].(bool)
 	return RunActivity{
 		ID:          id,
 		Name:        name,
@@ -200,5 +204,6 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 		MaxSpeedMps: maxSp,
 		ElevGainM:   elev,
 		AvgHR:       hr,
+		Trainer:     trainer || typ == "VirtualRun",
 	}, true
 }

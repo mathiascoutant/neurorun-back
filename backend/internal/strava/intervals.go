@@ -27,6 +27,8 @@ const (
 	// WorkoutTypeRunWorkout est la valeur Strava `workout_type` d'une séance
 	// (0 = sortie normale, 1 = course, 2 = sortie longue, 3 = séance).
 	WorkoutTypeRunWorkout = 3
+	// WorkoutTypeRace : sortie déclarée « course » (compétition) sur Strava.
+	WorkoutTypeRace = 1
 
 	// Écart minimal entre allure d'effort et allure de récupération : en deçà,
 	// c'est une sortie irrégulière, pas un fractionné.
