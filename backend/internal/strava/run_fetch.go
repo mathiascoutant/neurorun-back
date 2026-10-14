@@ -30,6 +30,9 @@ type RunActivity struct {
 	// Trainer : tapis ou course virtuelle. La distance vient d'un capteur de foulée
 	// souvent mal étalonné, pas du GPS.
 	Trainer bool
+	// SummaryPolyline : silhouette du tracé déjà simplifiée par Strava (format
+	// polyline de Google), vide sans GPS.
+	SummaryPolyline string
 }
 
 func runActivityTypes(t string) bool {
@@ -191,6 +194,10 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 	name, _ := m["name"].(string)
 	id := int64(jsonFloat(m["id"]))
 	trainer, _ := m["trainer"].(bool)
+	var polyline string
+	if mp, ok := m["map"].(map[string]any); ok {
+		polyline, _ = mp["summary_polyline"].(string)
+	}
 	return RunActivity{
 		ID:          id,
 		Name:        name,
@@ -205,5 +212,7 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 		ElevGainM:   elev,
 		AvgHR:       hr,
 		Trainer:     trainer || typ == "VirtualRun",
+
+		SummaryPolyline: polyline,
 	}, true
 }

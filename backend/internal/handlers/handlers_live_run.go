@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"runapp/internal/geo"
 	"runapp/internal/models"
 	"runapp/internal/store"
 	"runapp/internal/strava"
@@ -206,6 +207,9 @@ func scoreTotalOf(sc *models.RunScore) *int {
 type runHistoryFeedRow struct {
 	at time.Time
 	m  map[string]any
+	// track : trace d'une course NeuroRun, réduite en silhouette seulement pour
+	// les lignes retenues dans la page.
+	track []models.LiveRunTrackPoint
 }
 
 // paceSecPerKm donne l'allure d'une sortie en secondes par kilomètre, à partir
@@ -224,6 +228,20 @@ func paceSecPerKm(distM, movingSec, fallback float64) float64 {
 		return fallback
 	}
 	return 0
+}
+
+// liveRunRoutePolyline réduit la trace d'une course NeuroRun au même format que
+// le summary_polyline de Strava. Les points trop imprécis sont écartés : un saut
+// GPS au départ déformerait toute la vignette.
+func liveRunRoutePolyline(track []models.LiveRunTrackPoint) string {
+	pts := make([]geo.Point, 0, len(track))
+	for _, p := range track {
+		if p.AccuracyM != nil && *p.AccuracyM > 50 {
+			continue
+		}
+		pts = append(pts, geo.Point{Lat: p.Lat, Lng: p.Lng})
+	}
+	return geo.RoutePolyline(pts)
 }
 
 // nonZero évite une division par zéro dans le calcul de repli.
@@ -305,6 +323,7 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 				"avg_pace_sec_per_km": paceSecPerKm(lr.DistanceM, float64(lr.MovingSec), lr.AvgPaceSecPerKm),
 				"split_count":         len(lr.Splits),
 			},
+			track: lr.TrackPoints,
 		})
 	}
 	for _, ar := range stravaActs {
@@ -326,6 +345,9 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 		if ar.AvgHR != nil {
 			row["avg_heartrate"] = *ar.AvgHR
 		}
+		if ar.SummaryPolyline != "" {
+			row["route_polyline"] = ar.SummaryPolyline
+		}
 		// Séance à intervalles : l'allure ci-dessus est une moyenne qui inclut les
 		// récupérations, à ne pas lire comme l'allure tenue.
 		if strava.IsIntervalWorkout(ar.WorkoutType, ar.Name) {
@@ -344,6 +366,10 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]map[string]any, len(rows))
 	for i, row := range rows {
+		// Silhouette du tracé, dessinée sur chaque carte de l'historique.
+		if route := liveRunRoutePolyline(row.track); route != "" {
+			row.m["route_polyline"] = route
+		}
 		items[i] = row.m
 	}
 
