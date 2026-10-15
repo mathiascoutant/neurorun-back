@@ -502,10 +502,23 @@ type streamBlock struct {
 	fast      bool
 	distanceM float64
 	sec       float64
+	// Somme pondérée par la durée de la FC, et durée mesurée : la FC moyenne
+	// du bloc en découle.
+	hrSum float64
+	hrSec float64
+}
+
+func (b streamBlock) hrBpm() float64 {
+	if b.hrSec <= 0 {
+		return 0
+	}
+	return b.hrSum / b.hrSec
 }
 
 // blocksFromStream découpe le flux vitesse en blocs rapides et lents alternés.
-func blocksFromStream(times []int, vel []float64) []streamBlock {
+// hr (facultatif, même longueur que vel, 0 = pas de mesure) donne la FC de
+// chaque bloc.
+func blocksFromStream(times []int, vel, hr []float64) []streamBlock {
 	n := len(vel)
 	if len(times) < n {
 		n = len(times)
@@ -540,6 +553,10 @@ func blocksFromStream(times []int, vel []float64) []streamBlock {
 		b := &blocks[len(blocks)-1]
 		b.sec += dt
 		b.distanceM += sm[i] * dt
+		if i < len(hr) && hr[i] >= 30 && hr[i] <= 235 {
+			b.hrSum += hr[i] * dt
+			b.hrSec += dt
+		}
 	}
 	return mergeShortBlocks(blocks)
 }
@@ -554,6 +571,8 @@ func mergeShortBlocks(blocks []streamBlock) []streamBlock {
 			if len(out) > 0 && (b.sec < minIntervalBlockSec || out[len(out)-1].fast == b.fast) {
 				out[len(out)-1].distanceM += b.distanceM
 				out[len(out)-1].sec += b.sec
+				out[len(out)-1].hrSum += b.hrSum
+				out[len(out)-1].hrSec += b.hrSec
 				changed = true
 				continue
 			}
@@ -570,13 +589,19 @@ func mergeShortBlocks(blocks []streamBlock) []streamBlock {
 // IntervalSummaryFromStream découpe la séance sur le flux vitesse. Utile quand la
 // montre n'a pas de tours : les répétitions se lisent quand même dans la vitesse.
 func IntervalSummaryFromStream(times []int, vel []float64) *IntervalSummary {
-	blocks := blocksFromStream(times, vel)
+	return IntervalSummaryFromTrack(times, vel, nil)
+}
+
+// IntervalSummaryFromTrack : même découpage, sur la trace d'une course
+// NeuroRun, avec la FC de chaque bloc quand la montre l'a mesurée.
+func IntervalSummaryFromTrack(times []int, vel, hr []float64) *IntervalSummary {
+	blocks := blocksFromStream(times, vel, hr)
 	if len(blocks) < minIntervalEfforts+1 {
 		return nil
 	}
 	segs := make([]effortSegment, 0, len(blocks))
 	for _, b := range blocks {
-		segs = append(segs, effortSegment{distanceM: b.distanceM, sec: b.sec})
+		segs = append(segs, effortSegment{distanceM: b.distanceM, sec: b.sec, hrBpm: b.hrBpm()})
 	}
 	return summarize(segs, "stream")
 }

@@ -23,7 +23,10 @@ type VmaTest struct {
 	VmaKmh      float64 `bson:"vma_kmh" json:"vma_kmh"`
 
 	// Source : "iphone" ou "watch".
-	Source      string              `bson:"source,omitempty" json:"source,omitempty"`
+	Source string `bson:"source,omitempty" json:"source,omitempty"`
+	// HrPeakBpm : FC atteinte pendant le test (plus haute moyenne sur 10 s),
+	// base des zones cardiaques. 0 = test couru sans cardio.
+	HrPeakBpm   float64             `bson:"hr_peak_bpm,omitempty" json:"hr_peak_bpm,omitempty"`
 	TrackPoints []LiveRunTrackPoint `bson:"track_points,omitempty" json:"-"`
 }
 

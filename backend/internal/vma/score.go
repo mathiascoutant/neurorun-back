@@ -10,7 +10,10 @@ import (
 //   - 1 : toute course comparée à l'allure de course prédite par la VMA.
 //   - 2 : la course est d'abord classée (endurance, allure soutenue, course à
 //     fond) puis jugée sur ce qu'elle cherchait à faire, cardio compris.
-const ScoreVersion = 2
+//   - 3 : le type de séance est choisi au départ (libre, endurance,
+//     fractionné), le fractionné est noté sur ses répétitions, et le cardio se
+//     juge sur la FC atteinte au test de VMA plutôt que sur l'âge.
+const ScoreVersion = 3
 
 // Types de séance. La note ne juge pas une sortie en endurance fondamentale
 // comme un 10 km à fond : on vérifie qu'elle a été courue comme une endurance.
@@ -18,6 +21,8 @@ const (
 	SessionEndurance = "endurance"
 	SessionTempo     = "tempo"
 	SessionRace      = "race"
+	// Fractionné : jamais déduit de l'allure, seulement choisi au départ.
+	SessionInterval = "interval"
 )
 
 // Réglages de la notation. Ils fixent à eux seuls la difficulté de l'échelle :
@@ -76,12 +81,13 @@ const (
 	enduranceZoneHigh = 0.76
 )
 
-// Cardio. La FC max est estimée par l'âge (Tanaka), relevée si la course
-// montre plus haut : l'estimation se trompe de ±10 bpm, d'où des plafonds
-// volontairement hauts.
+// Cardio. La référence est la FC atteinte à la fin du test de VMA ; sans test
+// mesuré au cardio, une FC max estimée par l'âge (Tanaka), relevée si la course
+// montre plus haut. Les plafonds sont les bornes des zones affichées dans
+// l'app : l'endurance doit rester en zone 2, l'allure soutenue sous la zone 5.
 const (
-	enduranceHrCeiling = 0.80
-	tempoHrCeiling     = 0.92
+	enduranceHrCeiling = HrZone3Floor
+	tempoHrCeiling     = HrZone5Floor
 	// Au-dessus du plafond : 3 bpm → 85, 5 bpm → 70, 10 bpm → 37.
 	hrFalloffBpm = 10.0
 	// Le cœur met quelques minutes à rejoindre l'effort : on ne juge pas le
@@ -119,10 +125,17 @@ var componentLabels = map[string]string{
 	"pace_zone":  "Allure",
 	"hr_zone":    "Zone cardio",
 	"decoupling": "Dérive cardiaque",
+	"reps":       "Régularité des répétitions",
+	"fade":       "Tenue des répétitions",
+	"effort":     "Intensité des efforts",
+	"recoveries": "Récupérations",
 }
 
 // componentOrder : ordre d'affichage des composantes.
-var componentOrder = []string{"hr_zone", "pace_zone", "regularity", "decoupling", "chrono"}
+var componentOrder = []string{
+	"hr_zone", "pace_zone", "regularity", "decoupling", "chrono",
+	"reps", "fade", "effort", "recoveries",
+}
 
 // Split : un kilomètre complet tel que remonté par l'app ou la montre.
 type Split struct {
@@ -148,8 +161,14 @@ type Input struct {
 	// StartMs : début de la course, borne gauche du premier kilomètre.
 	StartMs int64
 	Hr      []HrSample
-	// HrMaxBpm : FC max estimée (0 = inconnue : pas de zone cardio).
+	// HrMaxBpm : FC de référence (0 = inconnue : pas de zone cardio).
 	HrMaxBpm float64
+	// HrMaxMeasured : la référence vient du test de VMA. Elle fait foi telle
+	// quelle ; une estimation par l'âge, elle, est relevée si la course monte
+	// plus haut.
+	HrMaxMeasured bool
+	// Intervals : découpage effort / récupération d'un fractionné.
+	Intervals *IntervalInput
 
 	// SessionType force le type de séance ; vide = détection par l'allure.
 	SessionType string
@@ -185,6 +204,10 @@ type Result struct {
 	SessionType string `json:"session_type"`
 	// SessionAuto : le type a été déduit de l'allure, pas choisi.
 	SessionAuto bool `json:"session_auto"`
+	// IntervalsUndetected : fractionné choisi au départ, mais les répétitions
+	// ne se détachent pas de la trace ; la sortie est jugée comme une course
+	// continue.
+	IntervalsUndetected bool `json:"intervals_undetected,omitempty"`
 
 	Total int `json:"total"`
 	// Regularity et Chrono restent remplis pour les versions de l'app qui ne
@@ -210,6 +233,8 @@ type Result struct {
 	ZoneSlowPaceSecPerKm float64 `json:"zone_slow_pace_sec_per_km,omitempty"`
 
 	Kms []KmScore `json:"kms"`
+	// Reps : répétitions d'un fractionné, dans l'ordre de la séance.
+	Reps []RepScore `json:"reps,omitempty"`
 
 	// Indicateurs de lecture, réutilisés pour l'explication.
 	KmsInBand     int     `json:"kms_in_band"`
@@ -279,7 +304,7 @@ func DetectSession(intensity, distanceKm float64) string {
 
 // ValidSessionType dit si un type de séance est connu.
 func ValidSessionType(t string) bool {
-	return t == SessionEndurance || t == SessionTempo || t == SessionRace
+	return t == SessionEndurance || t == SessionTempo || t == SessionRace || t == SessionInterval
 }
 
 // Score note une course sur 100 selon ce qu'elle cherchait à faire.
@@ -336,6 +361,11 @@ func Score(in Input) Result {
 	intensity := in.DistanceKm / (in.MovingSec / 3600) / in.VmaKmh
 	res.IntensityPct = math.Round(intensity*1000) / 10
 	res.SessionType, res.SessionAuto = in.SessionType, false
+	if res.SessionType == SessionInterval && !in.Intervals.usable() {
+		// Sans répétitions repérables, juger un fractionné sur elles n'aurait
+		// aucun sens : on retombe sur la lecture d'une sortie continue.
+		res.SessionType, res.IntervalsUndetected = "", true
+	}
 	if !ValidSessionType(res.SessionType) {
 		res.SessionType, res.SessionAuto = DetectSession(intensity, in.DistanceKm), true
 	}
@@ -343,7 +373,9 @@ func Score(in Input) Result {
 	hr := analyzeHr(in, complete)
 
 	var points map[string]float64
-	if res.SessionType == SessionRace {
+	if res.SessionType == SessionInterval {
+		points = scoreIntervals(&res, in.Intervals, in.VmaKmh)
+	} else if res.SessionType == SessionRace {
 		points = scoreRace(&res, complete, target, chronoDelta, in.DistanceKm)
 		// Nettement plus rapide que prévu : la VMA de référence a vieilli. Ce
 		// repère-là reste relatif — 3 % d'avance ne pèsent pas pareil sur 5 km
@@ -365,11 +397,17 @@ func Score(in Input) Result {
 	}
 
 	weights := map[string]float64{"regularity": weightRegularity * 100, "chrono": weightChrono * 100}
-	if res.SessionType != SessionRace {
+	switch res.SessionType {
+	case SessionInterval:
+		weights = intervalWeights
+	case SessionEndurance, SessionTempo:
 		weights = steadyWeights[res.SessionType]
 	}
 	var total float64
 	res.Components, total = combine(points, weights)
+	if res.SessionType == SessionInterval {
+		total = math.Min(total, intervalEffortCap(points["effort"]))
+	}
 
 	res.Scorable = true
 	res.Total = int(math.Round(total))
@@ -495,6 +533,10 @@ func scoreSteady(res *Result, complete []Split, hr hrAnalysis, vmaKmh, distanceK
 
 // paceStats : repères de lecture communs à tous les types de séance.
 func paceStats(res *Result, complete []Split) {
+	// Fractionné : ses repères se lisent sur les répétitions, pas au km.
+	if len(res.Kms) == 0 {
+		return
+	}
 	bestPoints, worstPoints := -1.0, 101.0
 	minPace, maxPace := math.Inf(1), math.Inf(-1)
 	for _, k := range res.Kms {
@@ -620,9 +662,12 @@ func analyzeHr(in Input, complete []Split) hrAnalysis {
 	}
 	a.avg = sumBpm / sumW
 
-	// FC max : l'estimation par l'âge, sauf si la course est montée plus haut
-	// (98e centile, pour ignorer les pics isolés du capteur).
-	if in.HrMaxBpm > 0 {
+	// FC de référence : celle du test de VMA fait foi. Une estimation par
+	// l'âge, elle, cède si la course est montée plus haut (98e centile, pour
+	// ignorer les pics isolés du capteur).
+	if in.HrMaxMeasured {
+		a.maxBpm = in.HrMaxBpm
+	} else if in.HrMaxBpm > 0 {
 		sorted := make([]float64, len(a.samples))
 		for i, s := range a.samples {
 			sorted[i] = s.Bpm

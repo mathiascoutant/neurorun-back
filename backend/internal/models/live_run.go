@@ -68,6 +68,28 @@ type RunScore struct {
 	Explanation *RunScoreExplanation `bson:"explanation,omitempty" json:"explanation,omitempty"`
 }
 
+// Types de course choisis au départ, sur le téléphone ou à la montre. Ils
+// décident de la façon dont la course est notée et affichée.
+const (
+	RunTypeFree      = "free"      // course libre : le type se déduit de l'allure
+	RunTypeEndurance = "endurance" // endurance fondamentale
+	RunTypeInterval  = "interval"  // fractionné
+)
+
+// NormalizeRunType : type connu, sinon course libre (anciennes versions de
+// l'app, qui n'envoient rien).
+func NormalizeRunType(t string) string {
+	switch t {
+	case RunTypeEndurance, RunTypeInterval:
+		return t
+	default:
+		return RunTypeFree
+	}
+}
+
+// MaxRunNameLen : longueur maximale du nom d'une course, en caractères.
+const MaxRunNameLen = 60
+
 // LiveRun : session course en direct enregistrée depuis le front.
 type LiveRun struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
@@ -80,6 +102,13 @@ type LiveRun struct {
 	ClientRunID string `bson:"client_run_id,omitempty" json:"client_run_id,omitempty"`
 	// TrackTruncated : la trace reçue dépassait la limite et a été coupée.
 	TrackTruncated bool `bson:"track_truncated,omitempty" json:"track_truncated,omitempty"`
+
+	// Name : nom donné par le coureur ; vide = nom par défaut (« Course du
+	// soir »…), calculé par l'app.
+	Name string `bson:"name,omitempty" json:"name,omitempty"`
+	// SessionType : type choisi au départ (RunTypeFree…). Vide sur les courses
+	// enregistrées avant le choix : elles valent une course libre.
+	SessionType string `bson:"session_type,omitempty" json:"session_type,omitempty"`
 
 	TargetKm     float64 `bson:"target_km" json:"target_km"`
 	DistanceM    float64 `bson:"distance_m" json:"distance_m"`

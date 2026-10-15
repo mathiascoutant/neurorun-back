@@ -84,8 +84,9 @@ func TestFallbackEnduranceParleDeZone(t *testing.T) {
 func TestLiveRunScoreInput(t *testing.T) {
 	bpm := func(v float64) *float64 { return &v }
 	run := &models.LiveRun{
-		DistanceM: 2100,
-		MovingSec: 720,
+		DistanceM:   2100,
+		MovingSec:   720,
+		SessionType: models.RunTypeEndurance,
 		Splits: []models.LiveRunSplit{
 			{Km: 1, PaceSecPerKm: 340, EndTimestampMs: 1_760_000_340_000},
 			{Km: 2, PaceSecPerKm: 345, EndTimestampMs: 1_760_000_685_000},
@@ -96,7 +97,8 @@ func TestLiveRunScoreInput(t *testing.T) {
 			{TMs: 1_760_000_200_000, HrBpm: bpm(140)},
 		},
 	}
-	in := liveRunScoreInput(run, 15, "1996-01-01", vma.SessionTempo)
+	ref := &vma.HrReference{Bpm: 188, Source: vma.HrRefVmaTest}
+	in := liveRunScoreInput(run, 15, ref)
 
 	if in.DistanceKm != 2.1 || in.MovingSec != 720 || in.VmaKmh != 15 {
 		t.Fatalf("mesures mal reprises : %+v", in)
@@ -111,22 +113,112 @@ func TestLiveRunScoreInput(t *testing.T) {
 	if in.StartMs != 1_760_000_000_000 {
 		t.Fatalf("départ %d, attendu le premier point", in.StartMs)
 	}
-	if in.HrMaxBpm == 0 || in.SessionType != vma.SessionTempo {
-		t.Fatalf("FC max %v / type %q mal transmis", in.HrMaxBpm, in.SessionType)
+	if in.HrMaxBpm != 188 || !in.HrMaxMeasured {
+		t.Fatalf("référence cardio %v (mesurée %v), attendu 188 du test", in.HrMaxBpm, in.HrMaxMeasured)
+	}
+	if in.SessionType != vma.SessionEndurance {
+		t.Fatalf("type %q, attendu endurance (choisi au départ)", in.SessionType)
 	}
 }
 
-func TestKeptSessionType(t *testing.T) {
-	if keptSessionType(nil) != "" {
-		t.Error("sans note, pas de type à garder")
+func TestScoredSessionType(t *testing.T) {
+	cas := map[string]string{
+		"":                      "",
+		models.RunTypeFree:      "",
+		"nimporte":              "",
+		models.RunTypeEndurance: vma.SessionEndurance,
+		models.RunTypeInterval:  vma.SessionInterval,
 	}
-	auto := &models.RunScore{Result: vma.Result{SessionType: vma.SessionTempo, SessionAuto: true}}
-	if keptSessionType(auto) != "" {
-		t.Error("un type détecté doit être redétecté au recalcul")
+	for in, want := range cas {
+		if got := scoredSessionType(in); got != want {
+			t.Errorf("%q : %q, attendu %q", in, got, want)
+		}
 	}
-	chosen := &models.RunScore{Result: vma.Result{SessionType: vma.SessionRace}}
-	if keptSessionType(chosen) != vma.SessionRace {
-		t.Error("un type choisi doit survivre au recalcul")
+}
+
+// Un fractionné enregistré à la montre : 10 min d'échauffement, 6 × (400 m
+// vite, 90 s de trot), puis retour au calme. Les répétitions doivent ressortir
+// de la vitesse le long de la trace.
+func TestLiveRunIntervalsDepuisLaTrace(t *testing.T) {
+	bpm := func(v float64) *float64 { return &v }
+	speed := func(v float64) *float64 { return &v }
+	var pts []models.LiveRunTrackPoint
+	tMs := int64(1_760_000_000_000)
+	add := func(sec int, mps, hr float64) {
+		for i := 0; i < sec; i++ {
+			pts = append(pts, models.LiveRunTrackPoint{TMs: tMs, SpeedMps: speed(mps), HrBpm: bpm(hr)})
+			tMs += 1000
+		}
+	}
+	add(600, 2.8, 140) // échauffement
+	for rep := 0; rep < 6; rep++ {
+		add(92, 4.35, 178) // 400 m en 1:32
+		if rep < 5 {
+			add(90, 2.2, 150)
+		}
+	}
+	add(400, 2.8, 145) // retour au calme
+	run := &models.LiveRun{SessionType: models.RunTypeInterval, TrackPoints: pts}
+
+	s := liveRunIntervals(run)
+	if s == nil || s.Source != "stream" {
+		t.Fatalf("découpage %+v, attendu sur la trace", s)
+	}
+	in := intervalInput(s)
+	if in == nil || len(in.Reps) != 6 {
+		t.Fatalf("répétitions %+v, attendu 6", in)
+	}
+	for i, r := range in.Reps {
+		if r.DistanceM < 330 || r.DistanceM > 470 {
+			t.Errorf("rép. %d : %.0f m, attendu ~400", i+1, r.DistanceM)
+		}
+		if r.HrBpm < 160 {
+			t.Errorf("rép. %d : FC %.0f, attendu celle de l'effort", i+1, r.HrBpm)
+		}
+		if i < 5 && (in.RecoveryAfter[i] < 60 || in.RecoveryAfter[i] > 120) {
+			t.Errorf("récup après rép. %d : %.0f s, attendu ~90", i+1, in.RecoveryAfter[i])
+		}
+	}
+
+	out := liveRunToJSON(run)
+	if out["is_interval"] != true || out["interval_summary"] == nil || out["session_type"] != models.RunTypeInterval {
+		t.Fatalf("détail sans le fractionné : %v / %v", out["is_interval"], out["session_type"])
+	}
+}
+
+func TestCleanRunName(t *testing.T) {
+	if got, ok := cleanRunName("  Sortie   du\n dimanche "); !ok || got != "Sortie du dimanche" {
+		t.Errorf("nom nettoyé %q (%v)", got, ok)
+	}
+	if got, ok := cleanRunName("   "); !ok || got != "" {
+		t.Errorf("nom vide %q (%v), attendu vide accepté", got, ok)
+	}
+	if _, ok := cleanRunName(strings.Repeat("é", models.MaxRunNameLen+1)); ok {
+		t.Error("un nom trop long doit être refusé")
+	}
+}
+
+func TestFallbackFractionne(t *testing.T) {
+	in := vma.Input{
+		DistanceKm: 6, MovingSec: 1980, VmaKmh: 15, SessionType: vma.SessionInterval,
+		Intervals: &vma.IntervalInput{RecoveryAfter: []float64{90, 90, 90, 0}},
+	}
+	for i := 1; i <= 6; i++ {
+		in.Splits = append(in.Splits, vma.Split{Km: i, PaceSecPerKm: 330})
+	}
+	for _, p := range []float64{228, 230, 236, 244} {
+		in.Intervals.Reps = append(in.Intervals.Reps, vma.IntervalSegment{DistanceM: 400, Sec: p * 0.4})
+	}
+	sc := &models.RunScore{Result: vma.Score(in)}
+	if sc.SessionType != vma.SessionInterval {
+		t.Fatalf("type %q, attendu fractionné", sc.SessionType)
+	}
+	exp := fallbackExplanation(sc)
+	if !strings.Contains(exp.Summary, "ractionné") || len(exp.Why) == 0 || len(exp.Advice) == 0 {
+		t.Fatalf("explication incomplète : %+v", exp)
+	}
+	if !strings.Contains(strings.Join(exp.Advice, " "), "premières répétitions") {
+		t.Errorf("un relâchement de 12 s/km doit valoir un conseil : %v", exp.Advice)
 	}
 }
 

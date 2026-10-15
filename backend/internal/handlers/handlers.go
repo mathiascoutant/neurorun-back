@@ -1621,7 +1621,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/live-runs", h.ListLiveRuns)
 		pr.Get("/live-runs/{id}", h.GetLiveRun)
 		pr.Get("/live-runs/{id}/score", h.GetLiveRunScore)
-		pr.Put("/live-runs/{id}/score/session", h.SetLiveRunSessionType)
+		pr.Patch("/live-runs/{id}", h.RenameLiveRun)
 		// Test de VMA (6 min) : référence de toutes les notes. Repassable à volonté.
 		pr.Post("/vma-tests", h.CreateVmaTest)
 		pr.Get("/vma", h.GetVma)

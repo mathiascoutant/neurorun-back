@@ -43,6 +43,9 @@ type liveRunCreateBody struct {
 	Splits             []models.LiveRunSplit      `json:"splits"`
 	TrackPoints        []models.LiveRunTrackPoint `json:"track_points"`
 
+	// SessionType : type choisi au départ (free, endurance, interval).
+	SessionType string `json:"session_type"`
+
 	ClientVersion     string `json:"client_version"`
 	UserAgent         string `json:"user_agent"`
 	NavigatorLanguage string `json:"navigator_language"`
@@ -108,6 +111,7 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 		UserID:             u.ID,
 		ClientRunID:        clientRunID,
 		TrackTruncated:     truncated,
+		SessionType:        models.NormalizeRunType(strings.TrimSpace(b.SessionType)),
 		TargetKm:           b.TargetKm,
 		DistanceM:          b.DistanceM,
 		MovingSec:          b.MovingSec,
@@ -130,7 +134,7 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 
 	// Note sur 100, calculée avec la VMA en vigueur maintenant et figée avec la
 	// course : elle juge l'exécution du jour. Sans test de VMA, pas de note.
-	run.Score = h.scoreLiveRun(r.Context(), u, &run, "")
+	run.Score = h.scoreLiveRun(r.Context(), u, &run)
 
 	if err := h.db.CreateLiveRun(r.Context(), &run); err != nil {
 		// Course déjà enregistrée entre-temps (deux réessais simultanés) :
@@ -322,9 +326,18 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 				"moving_sec":          lr.MovingSec,
 				"avg_pace_sec_per_km": paceSecPerKm(lr.DistanceM, float64(lr.MovingSec), lr.AvgPaceSecPerKm),
 				"split_count":         len(lr.Splits),
+				"session_type":        models.NormalizeRunType(lr.SessionType),
 			},
 			track: lr.TrackPoints,
 		})
+		row := rows[len(rows)-1].m
+		if lr.Name != "" {
+			row["name"] = lr.Name
+		}
+		// Comme pour Strava : l'allure moyenne inclut les récupérations.
+		if lr.SessionType == models.RunTypeInterval {
+			row["is_interval"] = true
+		}
 	}
 	for _, ar := range stravaActs {
 		at := ar.StartAt.UTC()
@@ -414,6 +427,11 @@ func (h *Handlers) GetLiveRun(w http.ResponseWriter, r *http.Request) {
 		// Sa propre course porte les réactions reçues : c'est là qu'atterrit le tap
 		// sur une notification « Lucas t'a boosté ».
 		out["boosts_received"] = h.boostersForRun(r.Context(), run.ID)
+		// Zones cardiaques calées sur son test de VMA. Pas sur la course d'un
+		// ami : ses zones ne sont pas les nôtres.
+		if ref := h.hrReference(r.Context(), u); ref != nil {
+			out["hr_ref"] = ref
+		}
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
@@ -481,6 +499,9 @@ func (h *Handlers) GetStravaActivityDetail(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	m := strava.BuildLiveRunDetailMap(act, st, laps)
+	if ref := h.hrReference(r.Context(), u); ref != nil {
+		m["hr_ref"] = ref
+	}
 	writeJSON(w, http.StatusOK, m)
 }
 
@@ -508,6 +529,18 @@ func liveRunToJSON(lr *models.LiveRun) map[string]any {
 	}
 	if lr.ClientStats != nil {
 		m["client_stats"] = lr.ClientStats
+	}
+	if lr.Name != "" {
+		m["name"] = lr.Name
+	}
+	m["session_type"] = models.NormalizeRunType(lr.SessionType)
+	// Fractionné : l'écran de détail montre les répétitions et les
+	// récupérations plutôt que des kilomètres qui mélangent les deux.
+	if lr.SessionType == models.RunTypeInterval {
+		m["is_interval"] = true
+		if s := liveRunIntervals(lr); s != nil {
+			m["interval_summary"] = s
+		}
 	}
 	return m
 }

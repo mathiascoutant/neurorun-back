@@ -132,3 +132,48 @@ func (d *DB) SetLiveRunScoreExplanation(
 	}
 	return nil
 }
+
+// RecentVmaTestsHr : derniers tests, avec seulement ce qu'il faut pour en
+// tirer la FC atteinte (pic mémorisé, ou FC de la trace pour les tests plus
+// anciens que ce calcul).
+func (d *DB) RecentVmaTestsHr(ctx context.Context, userID primitive.ObjectID, limit int) ([]models.VmaTest, error) {
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetLimit(int64(limit)).
+		SetProjection(bson.M{
+			"created_at":          1,
+			"hr_peak_bpm":         1,
+			"track_points.t_ms":   1,
+			"track_points.hr_bpm": 1,
+		})
+	cur, err := d.vmaTests.Find(ctx, bson.M{"user_id": userID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.VmaTest
+	for cur.Next(ctx) {
+		var t models.VmaTest
+		if err := cur.Decode(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, cur.Err()
+}
+
+// SetLiveRunName renomme une course ; un nom vide rend le nom par défaut.
+func (d *DB) SetLiveRunName(ctx context.Context, userID, runID primitive.ObjectID, name string) error {
+	update := bson.M{"$set": bson.M{"name": name}}
+	if name == "" {
+		update = bson.M{"$unset": bson.M{"name": ""}}
+	}
+	res, err := d.liveRuns.UpdateOne(ctx, bson.M{"_id": runID, "user_id": userID}, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

@@ -117,7 +117,9 @@ func (h *Handlers) CreateVmaTest(w http.ResponseWriter, r *http.Request) {
 		DurationSec:  b.DurationSec,
 		VmaKmh:       vmaKmh,
 		Source:       source,
-		TrackPoints:  b.TrackPoints,
+		// La FC atteinte à VMA : c'est elle qui fixe les zones cardiaques.
+		HrPeakBpm:   vma.TestHrPeak(hrSamples(b.TrackPoints)),
+		TrackPoints: b.TrackPoints,
 	}
 	if err := h.db.CreateVmaTest(r.Context(), &t); err != nil {
 		if errors.Is(err, store.ErrDuplicateVmaTest) && clientTestID != "" {
@@ -193,6 +195,9 @@ func (h *Handlers) GetVma(w http.ResponseWriter, r *http.Request) {
 		resp["test_id"] = cur.ID.Hex()
 		resp["targets"] = vmaTargets(cur.VmaKmh)
 	}
+	if ref := h.hrReference(r.Context(), u); ref != nil {
+		resp["hr_ref"] = ref
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -231,15 +236,15 @@ func (h *Handlers) runVma(ctx context.Context, userID primitive.ObjectID, run *m
 	return test.VmaKmh, test.ID.Hex(), true
 }
 
-// scoreLiveRun calcule la note d'une course. sessionType force le type de
-// séance ("" = déduit de l'allure). Sans test de VMA, pas de note : on renvoie
-// nil et l'app invite à passer le test.
-func (h *Handlers) scoreLiveRun(ctx context.Context, u *models.User, run *models.LiveRun, sessionType string) *models.RunScore {
+// scoreLiveRun calcule la note d'une course, selon le type choisi au départ.
+// Sans test de VMA, pas de note : on renvoie nil et l'app invite à passer le
+// test.
+func (h *Handlers) scoreLiveRun(ctx context.Context, u *models.User, run *models.LiveRun) *models.RunScore {
 	vmaKmh, testID, ok := h.runVma(ctx, u.ID, run)
 	if !ok {
 		return nil
 	}
-	res := vma.Score(liveRunScoreInput(run, vmaKmh, u.BirthDate, sessionType))
+	res := vma.Score(liveRunScoreInput(run, vmaKmh, h.hrReference(ctx, u)))
 	if !res.Scorable {
 		return nil
 	}
@@ -250,8 +255,21 @@ func (h *Handlers) scoreLiveRun(ctx context.Context, u *models.User, run *models
 	}
 }
 
+// scoredSessionType : comment juger une course d'après le type choisi au
+// départ. Une course libre se classe d'elle-même sur son allure.
+func scoredSessionType(runType string) string {
+	switch models.NormalizeRunType(runType) {
+	case models.RunTypeEndurance:
+		return vma.SessionEndurance
+	case models.RunTypeInterval:
+		return vma.SessionInterval
+	default:
+		return ""
+	}
+}
+
 // liveRunScoreInput : ce que la note lit d'une course enregistrée.
-func liveRunScoreInput(run *models.LiveRun, vmaKmh float64, birthDate, sessionType string) vma.Input {
+func liveRunScoreInput(run *models.LiveRun, vmaKmh float64, ref *vma.HrReference) vma.Input {
 	splits := make([]vma.Split, 0, len(run.Splits))
 	for _, s := range run.Splits {
 		splits = append(splits, vma.Split{Km: s.Km, PaceSecPerKm: s.PaceSecPerKm, EndMs: s.EndTimestampMs})
@@ -259,26 +277,15 @@ func liveRunScoreInput(run *models.LiveRun, vmaKmh float64, birthDate, sessionTy
 
 	// Départ : l'horodatage GPS, sinon le premier point de la trace.
 	start := run.GpsStartTsMs
-	hr := make([]vma.HrSample, 0, len(run.TrackPoints))
-	for _, p := range run.TrackPoints {
-		if run.GpsStartTsMs <= 0 && p.TMs > 0 && (start <= 0 || p.TMs < start) {
-			start = p.TMs
-		}
-		if p.HrBpm != nil && *p.HrBpm > 0 {
-			hr = append(hr, vma.HrSample{TMs: p.TMs, Bpm: *p.HrBpm})
+	if start <= 0 {
+		for _, p := range run.TrackPoints {
+			if p.TMs > 0 && (start <= 0 || p.TMs < start) {
+				start = p.TMs
+			}
 		}
 	}
 
-	// L'âge du jour de la course, pas celui du jour où on la relit.
-	at := run.CreatedAt
-	if start > 0 {
-		at = time.UnixMilli(start)
-	}
-	if at.IsZero() {
-		at = time.Now()
-	}
-
-	return vma.Input{
+	in := vma.Input{
 		Splits:     splits,
 		DistanceKm: run.DistanceM / 1000,
 		// Le temps de mouvement, pas le temps écoulé : les pauses ne doivent
@@ -286,19 +293,50 @@ func liveRunScoreInput(run *models.LiveRun, vmaKmh float64, birthDate, sessionTy
 		MovingSec:   run.MovingSec,
 		VmaKmh:      vmaKmh,
 		StartMs:     start,
-		Hr:          hr,
-		HrMaxBpm:    vma.EstimateHrMax(birthDate, at),
-		SessionType: sessionType,
+		Hr:          hrSamples(run.TrackPoints),
+		SessionType: scoredSessionType(run.SessionType),
 	}
+	if ref != nil {
+		in.HrMaxBpm, in.HrMaxMeasured = ref.Bpm, ref.Measured()
+	}
+	if in.SessionType == vma.SessionInterval {
+		in.Intervals = intervalInput(liveRunIntervals(run))
+	}
+	return in
 }
 
-// keptSessionType : le type de séance choisi par l'utilisateur, à conserver
-// quand la note est recalculée ("" = détection automatique).
-func keptSessionType(sc *models.RunScore) string {
-	if sc == nil || sc.SessionAuto {
-		return ""
+// hrReference : la FC qui fixe les zones cardiaques du coureur. Celle atteinte
+// au dernier test de VMA couru avec un cardio — six minutes à fond, elle ne
+// ment pas — sinon une estimation par l'âge.
+func (h *Handlers) hrReference(ctx context.Context, u *models.User) *vma.HrReference {
+	if tests, err := h.db.RecentVmaTestsHr(ctx, u.ID, 5); err == nil {
+		for _, t := range tests {
+			peak := t.HrPeakBpm
+			if peak <= 0 {
+				// Test antérieur au calcul du pic : on le tire de sa trace.
+				peak = vma.TestHrPeak(hrSamples(t.TrackPoints))
+			}
+			if peak > 0 {
+				at := t.CreatedAt.UTC()
+				return &vma.HrReference{Bpm: peak, Source: vma.HrRefVmaTest, TestedAt: &at, Zones: vma.HrZones(peak)}
+			}
+		}
 	}
-	return sc.SessionType
+	if est := vma.EstimateHrMax(u.BirthDate, time.Now()); est > 0 {
+		return &vma.HrReference{Bpm: est, Source: vma.HrRefAge, Zones: vma.HrZones(est)}
+	}
+	return nil
+}
+
+// hrSamples : la FC d'une trace.
+func hrSamples(points []models.LiveRunTrackPoint) []vma.HrSample {
+	out := make([]vma.HrSample, 0, len(points))
+	for _, p := range points {
+		if p.HrBpm != nil && *p.HrBpm > 0 {
+			out = append(out, vma.HrSample{TMs: p.TMs, Bpm: *p.HrBpm})
+		}
+	}
+	return out
 }
 
 // GetLiveRunScore renvoie la note d'une course, et rédige son explication à la
@@ -329,7 +367,7 @@ func (h *Handlers) GetLiveRunScore(w http.ResponseWriter, r *http.Request) {
 	score := run.Score
 	rescored := false
 	if score == nil || score.Version < vma.ScoreVersion {
-		if fresh := h.scoreLiveRun(r.Context(), u, run, keptSessionType(score)); fresh != nil {
+		if fresh := h.scoreLiveRun(r.Context(), u, run); fresh != nil {
 			score, rescored = fresh, true
 		}
 	}
@@ -350,56 +388,6 @@ func (h *Handlers) GetLiveRunScore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.respondScore(w, r, u.ID, runID, score, rescored)
-}
-
-type sessionTypeBody struct {
-	// SessionType : "endurance", "tempo", "race", ou "auto" pour revenir à la
-	// détection par l'allure.
-	SessionType string `json:"session_type"`
-}
-
-// SetLiveRunSessionType PUT /api/live-runs/{id}/score/session — corrige le
-// type de séance. La détection ne connaît que l'allure : un 10 km à fond raté
-// passe pour une allure soutenue, un footing trop rapide aussi. Le coureur
-// rétablit ce qu'il voulait faire, la note est recalculée en conséquence.
-func (h *Handlers) SetLiveRunSessionType(w http.ResponseWriter, r *http.Request) {
-	u := r.Context().Value(ctxUser{}).(*models.User)
-	if !h.requireCapability(w, r, u, "live_runs") {
-		return
-	}
-	runID, err := primitive.ObjectIDFromHex(chi.URLParam(r, "id"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id invalide"})
-		return
-	}
-	var b sessionTypeBody
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corps invalide"})
-		return
-	}
-	sessionType := strings.TrimSpace(b.SessionType)
-	if sessionType == "auto" {
-		sessionType = ""
-	} else if !vma.ValidSessionType(sessionType) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "type de séance inconnu"})
-		return
-	}
-
-	run, err := h.db.GetLiveRunByUser(r.Context(), u.ID, runID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "course introuvable"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lecture impossible"})
-		return
-	}
-	score := h.scoreLiveRun(r.Context(), u, run, sessionType)
-	if score == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "course non notable"})
-		return
-	}
-	h.respondScore(w, r, u.ID, runID, score, true)
 }
 
 // respondScore rédige l'explication si elle manque, mémorise ce qui a changé
@@ -450,6 +438,8 @@ func sessionLabel(t string) string {
 		return "endurance fondamentale"
 	case vma.SessionTempo:
 		return "allure soutenue"
+	case vma.SessionInterval:
+		return "fractionné"
 	default:
 		return "course à fond"
 	}
@@ -480,11 +470,32 @@ func (h *Handlers) explainScoreAI(ctx context.Context, s *models.RunScore) (*mod
 	}
 	origin := "déduit de l'allure moyenne"
 	if !s.SessionAuto {
-		origin = "choisi par le coureur"
+		origin = "choisi par le coureur au départ"
+	} else if s.IntervalsUndetected {
+		origin = "fractionné choisi au départ, mais les répétitions ne se détachent pas de la trace : jugé comme une sortie continue"
 	}
 
 	var detail, rules string
-	if s.SessionType == vma.SessionRace {
+	if s.SessionType == vma.SessionInterval {
+		var reps strings.Builder
+		for _, rp := range s.Reps {
+			fmt.Fprintf(&reps, "rép. %d : %.0f m en %s, %s (%s)", rp.Rep, rp.DistanceM, fmtDuration(rp.Sec),
+				fmtPace(rp.PaceSecPerKm), signedSec(rp.DeltaSec))
+			if rp.HrBpm > 0 {
+				fmt.Fprintf(&reps, ", %.0f bpm", rp.HrBpm)
+			}
+			if rp.RecoverySec > 0 {
+				fmt.Fprintf(&reps, ", puis %s de récup", fmtDuration(rp.RecoverySec))
+			}
+			reps.WriteString(" ; ")
+		}
+		detail = fmt.Sprintf(`Répétitions (écart à l'allure médiane des répétitions) : %s
+Écart moyen à l'allure médiane : %.1f s/km. Relâchement dernier tiers - premier tiers : %s.
+Allure minimale d'un effort de fractionné (85 %% de la VMA) : %s. Répétitions à cette intensité : %d sur %d.`,
+			strings.TrimSuffix(reps.String(), " ; "), s.MeanAbsDevSec, signedSec(s.DriftSec),
+			fmtPace(s.ZoneSlowPaceSecPerKm), s.KmsInBand, len(s.Reps))
+		rules = "La note juge les répétitions seules : leur régularité, leur tenue jusqu'à la dernière, l'intensité des efforts (au moins le seuil) et la régularité des récupérations. L'allure moyenne de la sortie, récupérations comprises, ne compte pas."
+	} else if s.SessionType == vma.SessionRace {
 		detail = fmt.Sprintf(`Objectif d'allure : %s, soit un temps visé de %s.
 Temps réalisé : %s (%s par rapport à l'objectif).
 Kilomètres (écart à l'allure visée) : %s
@@ -570,13 +581,65 @@ Pas de généralités creuses, appuie-toi sur les chiffres fournis.`,
 // jamais absente — et elle dit exactement la même chose que la note.
 func fallbackExplanation(s *models.RunScore) *models.RunScoreExplanation {
 	var exp *models.RunScoreExplanation
-	if s.SessionType == vma.SessionEndurance || s.SessionType == vma.SessionTempo {
+	switch s.SessionType {
+	case vma.SessionEndurance, vma.SessionTempo:
 		exp = fallbackSteady(s)
-	} else {
+	case vma.SessionInterval:
+		exp = fallbackInterval(s)
+	default:
 		exp = fallbackRace(s)
+	}
+	if s.IntervalsUndetected {
+		exp.Why = append([]string{"Tes répétitions ne se détachent pas assez de la trace pour être isolées : la séance est jugée comme une sortie continue."}, exp.Why...)
 	}
 	exp.CreatedAt = time.Now().UTC()
 	return exp
+}
+
+func fallbackInterval(s *models.RunScore) *models.RunScoreExplanation {
+	var summary string
+	switch s.Band {
+	case "exceptionnel":
+		summary = "Fractionné maîtrisé : toutes tes répétitions à la même allure, jusqu'à la dernière."
+	case "tres_bon":
+		summary = "Très bon fractionné, des répétitions régulières et bien tenues."
+	case "bon":
+		summary = "Bon fractionné, avec encore de la marge sur la régularité de tes répétitions."
+	case "correct":
+		summary = "Fractionné correct, mais tes répétitions n'ont pas toutes eu la même allure."
+	default:
+		summary = "Fractionné difficile : les répétitions se sont écartées les unes des autres."
+	}
+
+	why := []string{
+		fmt.Sprintf("%d répétitions, écart moyen de %.1f s/km à leur allure médiane ; %.0f s entre la plus rapide (rép. %d) et la plus lente (rép. %d).",
+			len(s.Reps), s.MeanAbsDevSec, s.SpreadSec, s.FastestKm, s.SlowestKm),
+	}
+	if s.DriftSec > 0 {
+		why = append(why, fmt.Sprintf("Tes dernières répétitions sont %s plus lentes que les premières.", signedSec(s.DriftSec)))
+	} else {
+		why = append(why, "Tu as tenu ton allure jusqu'à la dernière répétition.")
+	}
+	why = append(why, fmt.Sprintf("%d répétitions sur %d au moins à l'allure du seuil (%s).",
+		s.KmsInBand, len(s.Reps), fmtPace(s.ZoneSlowPaceSecPerKm)))
+
+	advice := []string{}
+	if s.DriftSec > 5 {
+		advice = append(advice, "Pars un peu moins vite sur les premières répétitions : mieux vaut finir à la même allure que t'effondrer sur la fin.")
+	}
+	if pts, ok := componentScore(s, "reps"); ok && pts < 80 {
+		advice = append(advice, "Fixe-toi une allure cible avant la séance et regarde-la sur les 100 premiers mètres de chaque répétition.")
+	}
+	if s.KmsInBand < len(s.Reps) {
+		advice = append(advice, fmt.Sprintf("Certaines répétitions sont plus lentes que %s : en fractionné, l'effort doit au moins atteindre le seuil.", fmtPace(s.ZoneSlowPaceSecPerKm)))
+	}
+	if pts, ok := componentScore(s, "recoveries"); ok && pts < 75 {
+		advice = append(advice, "Garde la même durée de récupération entre chaque répétition : c'est ce qui rend les efforts comparables.")
+	}
+	if len(advice) == 0 {
+		advice = append(advice, "Séance bien menée : tu peux ajouter une répétition ou raccourcir la récupération la prochaine fois.")
+	}
+	return &models.RunScoreExplanation{Summary: summary, Why: why, Advice: advice}
 }
 
 func fallbackRace(s *models.RunScore) *models.RunScoreExplanation {
