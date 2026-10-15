@@ -130,7 +130,7 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 
 	// Note sur 100, calculée avec la VMA en vigueur maintenant et figée avec la
 	// course : elle juge l'exécution du jour. Sans test de VMA, pas de note.
-	run.Score = h.scoreLiveRun(r.Context(), u.ID, &run)
+	run.Score = h.scoreLiveRun(r.Context(), u, &run, "")
 
 	if err := h.db.CreateLiveRun(r.Context(), &run); err != nil {
 		// Course déjà enregistrée entre-temps (deux réessais simultanés) :

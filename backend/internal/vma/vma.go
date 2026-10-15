@@ -3,11 +3,15 @@
 // Deux briques indépendantes :
 //   - la VMA, mesurée par un test de 6 minutes (demi-Cooper), qui sert de
 //     référence pour prédire l'allure tenable sur n'importe quelle distance ;
-//   - la note, entièrement déterministe : on compare chaque kilomètre à
-//     l'allure prévue. L'IA n'intervient que pour rédiger l'explication.
+//   - la note, entièrement déterministe : la course est classée (endurance,
+//     allure soutenue, course à fond) puis jugée sur ce qu'elle cherchait à
+//     faire. L'IA n'intervient que pour rédiger l'explication.
 package vma
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 // TestDurationSec : durée officielle du test (6 minutes).
 const TestDurationSec = 360.0
@@ -121,4 +125,22 @@ var StandardDistances = []struct {
 	{"10k", 10},
 	{"half", 21.0975},
 	{"marathon", 42.195},
+}
+
+// EstimateHrMax : FC max estimée par l'âge à la date de la course (formule de
+// Tanaka, 208 - 0,7 × âge, plus juste que 220 - âge chez les coureurs).
+// 0 si la date de naissance est absente ou invraisemblable.
+func EstimateHrMax(birthDate string, at time.Time) float64 {
+	bd, err := time.Parse("2006-01-02", birthDate)
+	if err != nil || at.IsZero() {
+		return 0
+	}
+	age := at.Year() - bd.Year()
+	if at.Month() < bd.Month() || (at.Month() == bd.Month() && at.Day() < bd.Day()) {
+		age--
+	}
+	if age < 10 || age > 100 {
+		return 0
+	}
+	return math.Round(208 - 0.7*float64(age))
 }

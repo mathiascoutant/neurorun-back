@@ -17,7 +17,7 @@ func scoreFor(t *testing.T, vmaKmh, distanceKm float64, paces []float64) *models
 		splits = append(splits, vma.Split{Km: i + 1, PaceSecPerKm: p})
 		total += p
 	}
-	res := vma.Score(splits, distanceKm, total, vmaKmh)
+	res := vma.Score(vma.Input{Splits: splits, DistanceKm: distanceKm, MovingSec: total, VmaKmh: vmaKmh})
 	if !res.Scorable {
 		t.Fatalf("course non notable : %s", res.Reason)
 	}
@@ -55,6 +55,78 @@ func TestFallbackExplanationJamaisVide(t *testing.T) {
 		if !strings.ContainsAny(strings.Join(exp.Why, " "), "0123456789") {
 			t.Errorf("%s : explication sans chiffres : %v", nom, exp.Why)
 		}
+	}
+}
+
+// Le secours d'une endurance parle de zone et de cardio, pas d'objectif de
+// chrono : un footing n'a pas à approcher l'allure de course.
+func TestFallbackEnduranceParleDeZone(t *testing.T) {
+	ef := 3600 / (15 * 0.68)
+	sc := scoreFor(t, 15, 6, []float64{ef, ef + 3, ef - 3, ef, ef + 2, ef - 2})
+	if sc.SessionType != vma.SessionEndurance {
+		t.Fatalf("type %q, attendu endurance", sc.SessionType)
+	}
+	exp := fallbackExplanation(sc)
+	if !strings.Contains(exp.Summary, "endurance") {
+		t.Errorf("résumé sans le type de séance : %q", exp.Summary)
+	}
+	why := strings.Join(exp.Why, " ")
+	if !strings.Contains(why, "zone") || strings.Contains(why, "Objectif") {
+		t.Errorf("le pourquoi doit parler de zone, pas d'objectif : %v", exp.Why)
+	}
+	// Sans montre, on invite à courir avec le cardio.
+	if !strings.Contains(strings.Join(exp.Advice, " "), "cardio") {
+		t.Errorf("conseils sans invitation au cardio : %v", exp.Advice)
+	}
+}
+
+// La FC et les horodatages de la trace arrivent jusqu'à la note.
+func TestLiveRunScoreInput(t *testing.T) {
+	bpm := func(v float64) *float64 { return &v }
+	run := &models.LiveRun{
+		DistanceM: 2100,
+		MovingSec: 720,
+		Splits: []models.LiveRunSplit{
+			{Km: 1, PaceSecPerKm: 340, EndTimestampMs: 1_760_000_340_000},
+			{Km: 2, PaceSecPerKm: 345, EndTimestampMs: 1_760_000_685_000},
+		},
+		TrackPoints: []models.LiveRunTrackPoint{
+			{TMs: 1_760_000_000_000, HrBpm: bpm(120)},
+			{TMs: 1_760_000_100_000},
+			{TMs: 1_760_000_200_000, HrBpm: bpm(140)},
+		},
+	}
+	in := liveRunScoreInput(run, 15, "1996-01-01", vma.SessionTempo)
+
+	if in.DistanceKm != 2.1 || in.MovingSec != 720 || in.VmaKmh != 15 {
+		t.Fatalf("mesures mal reprises : %+v", in)
+	}
+	if len(in.Splits) != 2 || in.Splits[1].EndMs != 1_760_000_685_000 {
+		t.Fatalf("kilomètres mal repris : %+v", in.Splits)
+	}
+	if len(in.Hr) != 2 || in.Hr[1].Bpm != 140 {
+		t.Fatalf("FC mal reprise : %+v", in.Hr)
+	}
+	// Sans horodatage GPS, le départ est le premier point de la trace.
+	if in.StartMs != 1_760_000_000_000 {
+		t.Fatalf("départ %d, attendu le premier point", in.StartMs)
+	}
+	if in.HrMaxBpm == 0 || in.SessionType != vma.SessionTempo {
+		t.Fatalf("FC max %v / type %q mal transmis", in.HrMaxBpm, in.SessionType)
+	}
+}
+
+func TestKeptSessionType(t *testing.T) {
+	if keptSessionType(nil) != "" {
+		t.Error("sans note, pas de type à garder")
+	}
+	auto := &models.RunScore{Result: vma.Result{SessionType: vma.SessionTempo, SessionAuto: true}}
+	if keptSessionType(auto) != "" {
+		t.Error("un type détecté doit être redétecté au recalcul")
+	}
+	chosen := &models.RunScore{Result: vma.Result{SessionType: vma.SessionRace}}
+	if keptSessionType(chosen) != vma.SessionRace {
+		t.Error("un type choisi doit survivre au recalcul")
 	}
 }
 

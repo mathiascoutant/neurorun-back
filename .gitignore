@@ -3,3 +3,6 @@ backend/.env
 .env
 .env.local
 *.local.env
+# Copies de sauvegarde (.env.bak…) : mêmes secrets que le .env.
+.env.*
+!.env.example

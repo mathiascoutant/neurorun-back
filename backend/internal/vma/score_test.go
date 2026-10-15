@@ -2,7 +2,9 @@ package vma
 
 import (
 	"math"
+	"strings"
 	"testing"
+	"time"
 )
 
 // splitsAt fabrique des kilomètres aux allures données.
@@ -12,6 +14,19 @@ func splitsAt(paces ...float64) []Split {
 		out = append(out, Split{Km: i + 1, PaceSecPerKm: p})
 	}
 	return out
+}
+
+// scoreAuto : note sans cardio, type de séance déduit de l'allure.
+func scoreAuto(splits []Split, distanceKm, movingSec, vmaKmh float64) Result {
+	return Score(Input{Splits: splits, DistanceKm: distanceKm, MovingSec: movingSec, VmaKmh: vmaKmh})
+}
+
+// scoreAsRace : note d'une course déclarée à fond, quelle que soit l'allure.
+func scoreAsRace(splits []Split, distanceKm, movingSec, vmaKmh float64) Result {
+	return Score(Input{
+		Splits: splits, DistanceKm: distanceKm, MovingSec: movingSec, VmaKmh: vmaKmh,
+		SessionType: SessionRace,
+	})
 }
 
 func totalOf(paces []float64) float64 {
@@ -71,7 +86,7 @@ func TestCourseParfaiteEstExceptionnelle(t *testing.T) {
 	const vma = 15
 	tg := TargetFor(vma, 5)
 	paces := []float64{tg.PaceSecPerKm, tg.PaceSecPerKm, tg.PaceSecPerKm, tg.PaceSecPerKm, tg.PaceSecPerKm}
-	r := Score(splitsAt(paces...), 5, totalOf(paces), vma)
+	r := scoreAuto(splitsAt(paces...), 5, totalOf(paces), vma)
 
 	if !r.Scorable {
 		t.Fatalf("course parfaite non notable : %v", r.Reason)
@@ -102,8 +117,8 @@ func TestIrregulierPerdContreRegulier(t *testing.T) {
 		t.Fatal("les deux scénarios doivent avoir le même chrono final")
 	}
 
-	rReg := Score(splitsAt(regulier...), 5, totalOf(regulier), vma)
-	rIrr := Score(splitsAt(irregulier...), 5, totalOf(irregulier), vma)
+	rReg := scoreAuto(splitsAt(regulier...), 5, totalOf(regulier), vma)
+	rIrr := scoreAuto(splitsAt(irregulier...), 5, totalOf(irregulier), vma)
 
 	if rIrr.Chrono != rReg.Chrono {
 		t.Fatalf("chrono identique attendu : %d vs %d", rIrr.Chrono, rReg.Chrono)
@@ -119,8 +134,9 @@ func TestIrregulierPerdContreRegulier(t *testing.T) {
 	}
 }
 
-// L'échelle doit être sévère : au-dessus de 95 seulement pour une exécution
-// quasi parfaite, et une bonne sortie ordinaire entre 75 et 90.
+// L'échelle d'une course à fond doit être sévère : au-dessus de 95 seulement
+// pour une exécution quasi parfaite, et une bonne sortie ordinaire entre 75
+// et 90.
 func TestEchelleDeNotation(t *testing.T) {
 	const vma = 15
 	tg := TargetFor(vma, 10)
@@ -144,7 +160,7 @@ func TestEchelleDeNotation(t *testing.T) {
 		for i := range paces {
 			paces[i] = p + c.ecart
 		}
-		r := Score(splitsAt(paces...), 10, totalOf(paces), vma)
+		r := scoreAsRace(splitsAt(paces...), 10, totalOf(paces), vma)
 		if r.Total < c.min || r.Total > c.max {
 			t.Errorf("%s : note %d, attendue entre %d et %d", c.nom, r.Total, c.min, c.max)
 		}
@@ -163,7 +179,7 @@ func TestTroisSecondesParKmPlafonneA96(t *testing.T) {
 				paces[i] = tg.PaceSecPerKm + 3
 			}
 			// Le chrono suit le même écart, tronçon partiel compris.
-			r := Score(splitsAt(paces...), distKm, (tg.PaceSecPerKm+3)*distKm, vmaKmh)
+			r := scoreAuto(splitsAt(paces...), distKm, (tg.PaceSecPerKm+3)*distKm, vmaKmh)
 			if r.Total > 96 {
 				t.Errorf("%.0f km à VMA %.0f : +3 s/km donne %d, plafond 96", distKm, vmaKmh, r.Total)
 			}
@@ -181,7 +197,7 @@ func TestDeriveEtVmaPerimee(t *testing.T) {
 
 	// Course qui se délite : 3 km à l'allure puis 3 km 30 s plus lents.
 	fade := []float64{p, p, p, p + 30, p + 30, p + 30}
-	r := Score(splitsAt(fade...), 6, totalOf(fade), vma)
+	r := scoreAsRace(splitsAt(fade...), 6, totalOf(fade), vma)
 	if r.DriftSec != 30 {
 		t.Fatalf("dérive = %v s, attendu 30", r.DriftSec)
 	}
@@ -194,7 +210,7 @@ func TestDeriveEtVmaPerimee(t *testing.T) {
 	for i := range fast {
 		fast[i] = p * 0.93
 	}
-	rf := Score(splitsAt(fast...), 6, totalOf(fast), vma)
+	rf := scoreAuto(splitsAt(fast...), 6, totalOf(fast), vma)
 	if !rf.StaleVmaHint {
 		t.Fatal("7 % plus rapide que l'objectif : la VMA devrait être signalée périmée")
 	}
@@ -206,10 +222,10 @@ func TestCasNonNotables(t *testing.T) {
 		res    Result
 		reason string
 	}{
-		{"sans VMA", Score(splitsAt(300, 300), 2, 600, 0), "vma_absente"},
-		{"trop court", Score(splitsAt(300), 0.4, 120, 15), "distance_trop_courte"},
-		{"durée nulle", Score(splitsAt(300), 5, 0, 15), "duree_invalide"},
-		{"aucun km complet", Score(nil, 5, 1500, 15), "aucun_km_complet"},
+		{"sans VMA", scoreAuto(splitsAt(300, 300), 2, 600, 0), "vma_absente"},
+		{"trop court", scoreAuto(splitsAt(300), 0.4, 120, 15), "distance_trop_courte"},
+		{"durée nulle", scoreAuto(splitsAt(300), 5, 0, 15), "duree_invalide"},
+		{"aucun km complet", scoreAuto(nil, 5, 1500, 15), "aucun_km_complet"},
 	}
 	for _, tc := range tests {
 		if tc.res.Scorable {
@@ -228,8 +244,290 @@ func TestDernierKmPartielIgnore(t *testing.T) {
 	p := tg.PaceSecPerKm
 	// 5 km à l'allure, plus un 6e split aberrant qui n'existe pas vraiment.
 	s := splitsAt(p, p, p, p, p, p+400)
-	r := Score(s, 5.4, p*5.4, vma)
+	r := scoreAuto(s, 5.4, p*5.4, vma)
 	if len(r.Kms) != 5 {
 		t.Fatalf("%d km notés, attendu 5 (le 6e est incomplet)", len(r.Kms))
 	}
+}
+
+// fakeRun fabrique une course enregistrée par une montre : allures au km et,
+// si hrBase > 0, une FC échantillonnée toutes les 2 s qui monte pendant
+// l'échauffement puis dérive de hrDriftPerKm à chaque kilomètre.
+func fakeRun(vmaKmh float64, paces []float64, hrBase, hrDriftPerKm, hrMax float64) Input {
+	start := int64(1_700_000_000_000)
+	t := start
+	in := Input{VmaKmh: vmaKmh, StartMs: start, HrMaxBpm: hrMax}
+	for i, p := range paces {
+		if hrBase > 0 {
+			for s := 0; s < int(p); s += 2 {
+				bpm := hrBase + hrDriftPerKm*float64(i)
+				if el := float64(t-start)/1000 + float64(s); el < 180 {
+					bpm = 100 + (bpm-100)*el/180
+				}
+				// Bruit de capteur, ±2 bpm.
+				bpm += float64((s/2)%5) - 2
+				in.Hr = append(in.Hr, HrSample{TMs: t + int64(s)*1000, Bpm: bpm})
+			}
+		}
+		t += int64(p * 1000)
+		in.Splits = append(in.Splits, Split{Km: i + 1, PaceSecPerKm: p, EndMs: t})
+		in.DistanceKm++
+		in.MovingSec += p
+	}
+	return in
+}
+
+// around : allures autour d'une allure de base, écart en secondes par km.
+func around(base float64, devs ...float64) []float64 {
+	out := make([]float64, len(devs))
+	for i, d := range devs {
+		out[i] = base + d
+	}
+	return out
+}
+
+const (
+	testVma   = 15.0
+	testHrMax = 187.0 // 30 ans selon Tanaka
+)
+
+// efPace : 68 % de VMA, en plein dans la zone d'endurance fondamentale.
+var efPace = math.Round(3600 / (testVma * 0.68))
+
+func TestDetectionDuTypeDeSeance(t *testing.T) {
+	cas := []struct {
+		nom       string
+		intensity float64
+		km        float64
+		want      string
+	}{
+		{"footing à 68 %", 0.68, 10, SessionEndurance},
+		{"footing lent à 58 %", 0.58, 8, SessionEndurance},
+		{"tempo à 82 %", 0.82, 10, SessionTempo},
+		{"10 km à l'allure prédite", FractionOfVma(10), 10, SessionRace},
+		{"10 km un peu plus vite que prévu", FractionOfVma(10) + 0.03, 10, SessionRace},
+		// Au marathon, l'allure de course passe sous le seuil du tempo : 76 %
+		// sur 42 km, c'est une course.
+		{"marathon à 76 %", 0.76, 42.195, SessionRace},
+	}
+	for _, c := range cas {
+		if got := DetectSession(c.intensity, c.km); got != c.want {
+			t.Errorf("%s : %q, attendu %q", c.nom, got, c.want)
+		}
+	}
+}
+
+// Le cœur de la v2 : une endurance fondamentale bien menée ne se fait plus
+// juger comme un 10 km raté.
+func TestEnduranceBienMeneeEstBienNotee(t *testing.T) {
+	in := fakeRun(testVma, around(efPace, -5, 4, -6, 5, 3, -4, 6, -5, 4, -2), 142, 0.8, testHrMax)
+	r := Score(in)
+
+	if r.SessionType != SessionEndurance || !r.SessionAuto {
+		t.Fatalf("type %q (auto %v), attendu endurance détectée", r.SessionType, r.SessionAuto)
+	}
+	if r.Total < 85 {
+		t.Fatalf("endurance régulière, cœur en zone : note %d, attendu au moins 85", r.Total)
+	}
+	// La même course jugée comme une course à fond s'effondre : c'était le
+	// défaut de la v1.
+	in.SessionType = SessionRace
+	if old := Score(in); old.Total > 20 {
+		t.Fatalf("jugée comme une course à fond, la sortie devrait être très mal notée : %d", old.Total)
+	}
+
+	if r.KmsInBand != 10 {
+		t.Errorf("%d km dans la zone, attendu 10", r.KmsInBand)
+	}
+	if r.HrCeilingBpm != 150 {
+		t.Errorf("plafond cardio %v, attendu 150 (80 %% de 187)", r.HrCeilingBpm)
+	}
+	if r.DecouplingPct == nil || *r.DecouplingPct <= 0 || *r.DecouplingPct > 5 {
+		t.Errorf("dérive cardiaque = %v, attendu entre 0 et 5 %%", r.DecouplingPct)
+	}
+	for _, k := range r.Kms {
+		if k.HrBpm == 0 {
+			t.Errorf("km %d sans FC", k.Km)
+		}
+	}
+}
+
+// Au-dessus de 90 reste réservé à une exécution quasi parfaite, comme pour la
+// course à fond : régularité serrée, cœur en zone et sans dérive.
+func TestEnduranceAuDessusDe90ResteDur(t *testing.T) {
+	cas := []struct {
+		nom      string
+		in       Input
+		min, max int
+	}{
+		{"parfaite", fakeRun(testVma, around(efPace, 0, 2, -2, 1, -1, 2, -2, 0, 1, -1), 138, 0.3, testHrMax), 95, 100},
+		{"±9 s/km, cœur au plafond", fakeRun(testVma, around(efPace, -8, 10, -12, 7, 9, -6, 12, -9, 5, -8), 146, 1.2, testHrMax), 75, 89},
+		{"sans cardio, ±9 s/km", fakeRun(testVma, around(efPace, -8, 10, -12, 7, 9, -6, 12, -9, 5, -8), 0, 0, testHrMax), 70, 85},
+		{"sans cardio, ±2 s/km", fakeRun(testVma, around(efPace, 0, 2, -2, 1, -1, 2, -2, 0, 1, -1), 0, 0, testHrMax), 95, 100},
+		{"cœur au-dessus du plafond tout du long", fakeRun(testVma, around(efPace, -5, 4, -6, 5, 3, -4, 6, -5, 4, -2), 158, 1, testHrMax), 55, 74},
+		{"qui se délite, cœur qui dérive", fakeRun(testVma, around(efPace, -10, -8, -6, -3, 0, 3, 6, 9, 12, 15), 140, 2.5, testHrMax), 50, 72},
+	}
+	for _, c := range cas {
+		r := Score(c.in)
+		if r.SessionType != SessionEndurance {
+			t.Errorf("%s : type %q, attendu endurance", c.nom, r.SessionType)
+		}
+		if r.Total < c.min || r.Total > c.max {
+			t.Errorf("%s : note %d, attendue entre %d et %d", c.nom, r.Total, c.min, c.max)
+		}
+	}
+}
+
+func TestEnduranceTropRapideCoute(t *testing.T) {
+	// 77 % de VMA : encore classée endurance, mais au-dessus de la zone.
+	fast := math.Round(3600 / (testVma * 0.77))
+	r := Score(fakeRun(testVma, around(fast, 0, 1, -1, 0, 1, -1, 0, 1), 0, 0, testHrMax))
+	if r.SessionType != SessionEndurance {
+		t.Fatalf("type %q, attendu endurance", r.SessionType)
+	}
+	if r.KmsInBand != 0 {
+		t.Errorf("%d km dans la zone, attendu 0 : tous sont trop rapides", r.KmsInBand)
+	}
+	pts, _ := componentOf(r, "pace_zone")
+	if pts >= 95 {
+		t.Errorf("allure au-dessus de la zone : %d, devrait coûter", pts)
+	}
+	for _, k := range r.Kms {
+		if k.DeltaSec >= 0 {
+			t.Errorf("km %d : écart %v, attendu négatif (plus rapide que la zone)", k.Km, k.DeltaSec)
+		}
+	}
+}
+
+func TestTempoRegulierContreIrregulier(t *testing.T) {
+	tempo := math.Round(3600 / (testVma * 0.82))
+	reg := Score(fakeRun(testVma, around(tempo, -4, 3, -5, 4, 2, -3, 4, -2), 165, 0.8, testHrMax))
+	irr := Score(fakeRun(testVma, around(tempo, -12, 10, -14, 12, 8, -10, 14, -9), 168, 1.2, testHrMax))
+	if reg.SessionType != SessionTempo || irr.SessionType != SessionTempo {
+		t.Fatalf("types %q / %q, attendu tempo", reg.SessionType, irr.SessionType)
+	}
+	if reg.Total < 88 {
+		t.Errorf("tempo régulier : %d, attendu au moins 88", reg.Total)
+	}
+	if irr.Total > 85 || irr.Total >= reg.Total {
+		t.Errorf("tempo en dents de scie : %d (régulier %d), devrait coûter cher", irr.Total, reg.Total)
+	}
+}
+
+// Une course forcée garde son type, même quand l'allure dit autre chose.
+func TestTypeDeSeanceForce(t *testing.T) {
+	in := fakeRun(testVma, around(efPace, 0, 1, -1, 0, 1), 0, 0, testHrMax)
+	in.SessionType = SessionTempo
+	r := Score(in)
+	if r.SessionType != SessionTempo || r.SessionAuto {
+		t.Fatalf("type %q (auto %v), attendu tempo choisi", r.SessionType, r.SessionAuto)
+	}
+	// Un footing jugé comme un tempo est trop lent pour sa zone.
+	if r.KmsInBand != 0 {
+		t.Errorf("%d km dans la zone tempo, attendu 0", r.KmsInBand)
+	}
+	// Un type inconnu retombe sur la détection.
+	in.SessionType = "fractionne"
+	if r := Score(in); r.SessionType != SessionEndurance || !r.SessionAuto {
+		t.Errorf("type inconnu : %q (auto %v), attendu endurance détectée", r.SessionType, r.SessionAuto)
+	}
+}
+
+// Les poids affichés font toujours 100 %, cardio ou pas.
+func TestPoidsDesComposantes(t *testing.T) {
+	cas := map[string]Input{
+		"endurance avec cardio": fakeRun(testVma, around(efPace, 0, 3, -3, 2, -2, 1), 140, 0.5, testHrMax),
+		"endurance sans cardio": fakeRun(testVma, around(efPace, 0, 3, -3, 2, -2, 1), 0, 0, testHrMax),
+		"cardio sans FC max":    fakeRun(testVma, around(efPace, 0, 3, -3, 2, -2, 1), 140, 0.5, 0),
+		"course à fond":         fakeRun(testVma, around(TargetFor(testVma, 5).PaceSecPerKm, 0, 1, -1, 0, 1), 175, 0.5, testHrMax),
+	}
+	want := map[string][]string{
+		"endurance avec cardio": {"hr_zone", "pace_zone", "regularity", "decoupling"},
+		"endurance sans cardio": {"pace_zone", "regularity"},
+		"cardio sans FC max":    {"pace_zone", "regularity", "decoupling"},
+		"course à fond":         {"regularity", "chrono"},
+	}
+	for nom, in := range cas {
+		r := Score(in)
+		sum := 0
+		var keys []string
+		for _, c := range r.Components {
+			sum += c.Weight
+			keys = append(keys, c.Key)
+			if c.Label == "" {
+				t.Errorf("%s : composante %q sans libellé", nom, c.Key)
+			}
+		}
+		if sum != 100 {
+			t.Errorf("%s : poids cumulés %d %%, attendu 100", nom, sum)
+		}
+		if strings.Join(keys, ",") != strings.Join(want[nom], ",") {
+			t.Errorf("%s : composantes %v, attendu %v", nom, keys, want[nom])
+		}
+	}
+}
+
+func TestDeriveCardiaque(t *testing.T) {
+	stable := Score(fakeRun(testVma, around(efPace, 0, 0, 0, 0, 0, 0, 0, 0), 140, 0, testHrMax))
+	derive := Score(fakeRun(testVma, around(efPace, 0, 0, 0, 0, 0, 0, 0, 0), 135, 3, testHrMax))
+	if stable.DecouplingPct == nil || math.Abs(*stable.DecouplingPct) > 0.5 {
+		t.Fatalf("cœur stable : dérive %v, attendu ~0", stable.DecouplingPct)
+	}
+	if derive.DecouplingPct == nil || *derive.DecouplingPct < 5 {
+		t.Fatalf("cœur qui monte de 3 bpm/km : dérive %v, attendu au-delà de 5 %%", derive.DecouplingPct)
+	}
+	ds, _ := componentOf(stable, "decoupling")
+	dd, _ := componentOf(derive, "decoupling")
+	if dd >= ds {
+		t.Errorf("la dérive devrait coûter : %d contre %d", dd, ds)
+	}
+
+	// Trop court pour comparer deux moitiés : pas de mesure.
+	short := Score(fakeRun(testVma, around(efPace, 0, 0, 0), 140, 0, testHrMax))
+	if short.DecouplingPct != nil {
+		t.Errorf("3 km : dérive %v, attendu non mesurée", *short.DecouplingPct)
+	}
+}
+
+// Une FC max sous-estimée par l'âge est relevée par ce que la course a montré.
+func TestFcMaxReleveeParLaCourse(t *testing.T) {
+	r := Score(fakeRun(testVma, around(TargetFor(testVma, 5).PaceSecPerKm, 0, 1, -1, 0, 1), 185, 2, 170))
+	if r.HrMaxBpm <= 170 {
+		t.Fatalf("FC max %v : la course est montée plus haut que l'estimation", r.HrMaxBpm)
+	}
+}
+
+// Un capteur qui ne couvre qu'une partie de la course ne compte pas.
+func TestCardioPartielIgnore(t *testing.T) {
+	in := fakeRun(testVma, around(efPace, 0, 1, -1, 0, 1, -1, 0, 1), 140, 0, testHrMax)
+	in.Hr = in.Hr[:len(in.Hr)/3]
+	r := Score(in)
+	if r.HrAvgBpm != 0 || r.HrInZonePct != nil {
+		t.Fatalf("FC sur un tiers de la course : devrait être ignorée (moyenne %v)", r.HrAvgBpm)
+	}
+}
+
+func TestEstimateHrMax(t *testing.T) {
+	at := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	if got := EstimateHrMax("1996-10-15", at); got != 187 {
+		t.Errorf("30 ans le jour J : %v, attendu 187", got)
+	}
+	// La veille de l'anniversaire, on a encore 29 ans.
+	if got := EstimateHrMax("1996-10-16", at); got != 188 {
+		t.Errorf("29 ans la veille : %v, attendu 188", got)
+	}
+	for _, bd := range []string{"", "pas une date", "2024-01-01"} {
+		if got := EstimateHrMax(bd, at); got != 0 {
+			t.Errorf("%q : %v, attendu 0", bd, got)
+		}
+	}
+}
+
+func componentOf(r Result, key string) (int, bool) {
+	for _, c := range r.Components {
+		if c.Key == key {
+			return c.Score, true
+		}
+	}
+	return 0, false
 }
