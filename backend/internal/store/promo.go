@@ -134,3 +134,25 @@ func (d *DB) IncrementPromoUse(ctx context.Context, id primitive.ObjectID) error
 	}
 	return nil
 }
+
+// FindPromosByIDs : les codes de plusieurs ambassadeurs en une requête, pour que la liste
+// de la console n’enchaîne pas un aller-retour par ligne.
+func (d *DB) FindPromosByIDs(ctx context.Context, ids []primitive.ObjectID) (map[primitive.ObjectID]models.PromoCode, error) {
+	out := map[primitive.ObjectID]models.PromoCode{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	cur, err := d.promoCodes.Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	for cur.Next(ctx) {
+		var p models.PromoCode
+		if err := cur.Decode(&p); err != nil {
+			return nil, err
+		}
+		out[p.ID] = p
+	}
+	return out, cur.Err()
+}

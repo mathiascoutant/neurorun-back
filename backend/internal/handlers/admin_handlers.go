@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -280,8 +281,12 @@ func (h *Handlers) AdminListPromos(w http.ResponseWriter, r *http.Request) {
 }
 
 type adminCreatePromoBody struct {
-	Code            string   `json:"code"`
+	Code string `json:"code"`
+	// Kind : percent | amount. Absent sur les clients antérieurs aux remises en euros,
+	// qui n’envoient qu’un pourcentage — NormalizePromoKind retombe alors sur percent.
+	Kind            string   `json:"kind"`
 	PercentOff      int      `json:"percent_off"`
+	AmountOffCents  int64    `json:"amount_off_cents"`
 	MaxUses         int      `json:"max_uses"`
 	ExpiresAt       *string  `json:"expires_at"`
 	Active          bool     `json:"active"`
@@ -299,17 +304,33 @@ func (h *Handlers) AdminCreatePromo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b.Code = strings.TrimSpace(b.Code)
-	if b.Code == "" || b.PercentOff < 0 || b.PercentOff > 100 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code ou pourcentage invalide"})
+	if b.Code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code requis"})
 		return
 	}
 	p := models.PromoCode{
 		Code:            b.Code,
+		Kind:            models.NormalizePromoKind(b.Kind),
 		PercentOff:      b.PercentOff,
+		AmountOffCents:  b.AmountOffCents,
 		MaxUses:         b.MaxUses,
 		Active:          b.Active,
 		ApplicablePlans: b.ApplicablePlans,
 		CreatedAt:       time.Now().UTC(),
+	}
+	/* Une remise en euros n’a pas de pourcentage, et l’inverse : on n’en garde qu’un. */
+	if p.EffectiveKind() == models.PromoKindAmount {
+		p.PercentOff = 0
+	} else {
+		p.AmountOffCents = 0
+	}
+	if err := p.ValidateDiscount(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if b.MaxUses < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nombre d’utilisations invalide"})
+		return
 	}
 	if b.ExpiresAt != nil && strings.TrimSpace(*b.ExpiresAt) != "" {
 		t, err := time.Parse(time.RFC3339, strings.TrimSpace(*b.ExpiresAt))
@@ -342,6 +363,13 @@ func (h *Handlers) AdminDeletePromo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id"})
 		return
 	}
+	/* Le code d’un ambassadeur fait partie de son contrat : il se désactive, il ne s’efface pas. */
+	if amb, err := h.db.FindAmbassadorByPromoID(r.Context(), oid); err == nil && amb != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "ce code appartient au contrat d’ambassadeur de " + amb.Email + " — désactive-le, ou retire l’ambassadeur",
+		})
+		return
+	}
 	if err := h.db.DeletePromoCode(r.Context(), oid); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
@@ -354,10 +382,65 @@ func (h *Handlers) AdminDeletePromo(w http.ResponseWriter, r *http.Request) {
 }
 
 type adminPatchPromoBody struct {
+	Kind            *string  `json:"kind"`
 	PercentOff      *int     `json:"percent_off"`
+	AmountOffCents  *int64   `json:"amount_off_cents"`
 	MaxUses         *int     `json:"max_uses"`
 	Active          *bool    `json:"active"`
 	ApplicablePlans []string `json:"applicable_plans"`
+}
+
+// promoPatch : construit la mise à jour d’un code promo en validant la remise sur le code
+// complet (nature + valeur), et pas champ par champ — passer de 30 % à 5 € suppose de
+// relire les deux, et de remettre à zéro celui qui ne sert plus.
+func promoPatch(
+	ctx context.Context,
+	h *Handlers,
+	id primitive.ObjectID,
+	b adminPatchPromoBody,
+) (bson.M, string) {
+	patch := bson.M{}
+	if b.Active != nil {
+		patch["active"] = *b.Active
+	}
+	if b.ApplicablePlans != nil {
+		patch["applicable_plans"] = b.ApplicablePlans
+	}
+	if b.MaxUses != nil {
+		if *b.MaxUses < 0 {
+			return nil, "nombre d’utilisations invalide"
+		}
+		patch["max_uses"] = *b.MaxUses
+	}
+	if b.Kind == nil && b.PercentOff == nil && b.AmountOffCents == nil {
+		return patch, ""
+	}
+	current, err := h.db.FindPromoByID(ctx, id)
+	if err != nil {
+		return nil, "code promo introuvable"
+	}
+	next := *current
+	if b.Kind != nil {
+		next.Kind = models.NormalizePromoKind(*b.Kind)
+	}
+	if b.PercentOff != nil {
+		next.PercentOff = *b.PercentOff
+	}
+	if b.AmountOffCents != nil {
+		next.AmountOffCents = *b.AmountOffCents
+	}
+	if next.EffectiveKind() == models.PromoKindAmount {
+		next.PercentOff = 0
+	} else {
+		next.AmountOffCents = 0
+	}
+	if err := next.ValidateDiscount(); err != nil {
+		return nil, err.Error()
+	}
+	patch["kind"] = next.EffectiveKind()
+	patch["percent_off"] = next.PercentOff
+	patch["amount_off_cents"] = next.AmountOffCents
+	return patch, ""
 }
 
 func (h *Handlers) AdminPatchPromo(w http.ResponseWriter, r *http.Request) {
@@ -376,22 +459,10 @@ func (h *Handlers) AdminPatchPromo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json"})
 		return
 	}
-	patch := bson.M{}
-	if b.PercentOff != nil {
-		if *b.PercentOff < 0 || *b.PercentOff > 100 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "percent"})
-			return
-		}
-		patch["percent_off"] = *b.PercentOff
-	}
-	if b.MaxUses != nil {
-		patch["max_uses"] = *b.MaxUses
-	}
-	if b.Active != nil {
-		patch["active"] = *b.Active
-	}
-	if b.ApplicablePlans != nil {
-		patch["applicable_plans"] = b.ApplicablePlans
+	patch, errMsg := promoPatch(r.Context(), h, oid, b)
+	if errMsg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+		return
 	}
 	if len(patch) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "rien à modifier"})

@@ -37,17 +37,39 @@ func checkoutPriceEUR(cfg *models.OfferConfig, plan string) (float64, bool) {
 	return p, ok && p > 0
 }
 
-func applyPromoPercent(base float64, percentOff int) float64 {
-	if percentOff <= 0 {
-		return base
+// applyPromo : prix à payer après remise, que le code retire un pourcentage ou des euros.
+// Le calcul vit dans le modèle : le même, ici comme au moment d’encaisser.
+func applyPromo(base float64, promo *models.PromoCode) float64 {
+	return promo.DiscountedPriceEUR(base)
+}
+
+// promoSummary : la remise telle qu’on la renvoie aux clients (site et app).
+func promoSummary(base float64, promo *models.PromoCode) map[string]any {
+	final := applyPromo(base, promo)
+	out := map[string]any{
+		"base_price_eur":   round2(base),
+		"discount_percent": 0,
+		"discount_eur":     0.0,
+		"discount_kind":    "",
+		"final_price_eur":  final,
 	}
-	if percentOff >= 100 {
-		return 0
+	if promo == nil {
+		return out
 	}
-	return round2(base * float64(100-percentOff) / 100)
+	out["discount_kind"] = promo.EffectiveKind()
+	out["discount_eur"] = promo.DiscountEUR(base)
+	out["promo_code"] = promo.Code
+	out["discount_label"] = promo.DiscountLabel()
+	if promo.EffectiveKind() == models.PromoKindPercent {
+		out["discount_percent"] = promo.PercentOff
+	}
+	return out
 }
 
 func round2(x float64) float64 {
+	if !(x > 0) {
+		return 0
+	}
 	return float64(int64(x*100+0.5)) / 100
 }
 
@@ -84,8 +106,8 @@ func (h *Handlers) validatePromo(ctx context.Context, code string, plan string) 
 			return nil, errors.New("code non valable pour cette offre")
 		}
 	}
-	if p.PercentOff < 0 || p.PercentOff > 100 {
-		return nil, errors.New("promo invalide")
+	if err := p.ValidateDiscount(); err != nil {
+		return nil, errors.New("code promo invalide")
 	}
 	return p, nil
 }
@@ -122,18 +144,10 @@ func (h *Handlers) CheckoutPreview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	pct := 0
-	if promo != nil {
-		pct = promo.PercentOff
-	}
-	final := applyPromoPercent(base, pct)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"plan":             b.Plan,
-		"base_price_eur":   base,
-		"discount_percent": pct,
-		"final_price_eur":  final,
-		"email":            u.Email,
-	})
+	out := promoSummary(base, promo)
+	out["plan"] = b.Plan
+	out["email"] = u.Email
+	writeJSON(w, http.StatusOK, out)
 }
 
 // CheckoutSubscribe POST — active l’offre sans passer par Stripe. Réservé aux montants à 0 €
@@ -215,15 +229,7 @@ func (h *Handlers) PaidSignupPreview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	pct := 0
-	if promo != nil {
-		pct = promo.PercentOff
-	}
-	final := applyPromoPercent(base, pct)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"plan":             b.Plan,
-		"base_price_eur":   base,
-		"discount_percent": pct,
-		"final_price_eur":  final,
-	})
+	out := promoSummary(base, promo)
+	out["plan"] = b.Plan
+	writeJSON(w, http.StatusOK, out)
 }

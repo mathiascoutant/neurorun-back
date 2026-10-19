@@ -35,6 +35,8 @@ type DB struct {
 	promoCodes    *mongo.Collection
 	circuits      *mongo.Collection
 	circuitTimes  *mongo.Collection
+	// ambassadors : contrats d’ambassadeur (un par compte) et leurs signatures.
+	ambassadors *mongo.Collection
 	// adminNotifications / adminPushTokens : alertes inscriptions destinées aux comptes admin.
 	adminNotifications *mongo.Collection
 	adminPushTokens    *mongo.Collection
@@ -98,6 +100,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	promoCodes := database.Collection("promo_codes")
 	circuits := database.Collection("circuits")
 	circuitTimes := database.Collection("circuit_times")
+	ambassadors := database.Collection("ambassadors")
 	adminNotifications := database.Collection("admin_notifications")
 	adminPushTokens := database.Collection("admin_push_tokens")
 	friendships := database.Collection("friendships")
@@ -139,6 +142,14 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	_, _ = promoCodes.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "code", Value: 1}},
 		Options: options.Index().SetUnique(true),
+	})
+	// Un compte ne peut porter qu’un contrat d’ambassadeur.
+	_, _ = ambassadors.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "user_id", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	_, _ = ambassadors.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "created_at", Value: -1}},
 	})
 	_, _ = circuits.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "center", Value: "2dsphere"}},
@@ -205,6 +216,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		promoCodes:    promoCodes,
 		circuits:      circuits,
 		circuitTimes:  circuitTimes,
+		ambassadors:   ambassadors,
 
 		adminNotifications: adminNotifications,
 		adminPushTokens:    adminPushTokens,

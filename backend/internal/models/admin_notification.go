@@ -17,6 +17,9 @@ const (
 	// signal le plus proche d’un téléchargement que le serveur puisse observer — l’App Store
 	// n’en notifie aucun, et une app installée sans être ouverte reste invisible.
 	AdminEventIOSInstall = "ios_install"
+	// AdminEventAmbassadorSigned : un ambassadeur a signé son contrat, qui attend la
+	// contre-signature de NeuroRun pour prendre effet.
+	AdminEventAmbassadorSigned = "ambassador_signed"
 )
 
 // AdminNotification : évènement destiné aux administrateurs. Historique consultable dans

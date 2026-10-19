@@ -397,3 +397,32 @@ func (d *DB) ListGoalsSummariesByUser(ctx context.Context, userID primitive.Obje
 	}
 	return out, cur.Err()
 }
+
+// FindUsersByIDsForAdmin : les comptes d’une liste de la console, en une requête. Distinct de
+// FindUsersByIDs, qui ne projette que l’identité affichée dans le fil social : ici on a besoin
+// de l’offre et du rôle, que la console montre à côté de chaque ligne.
+func (d *DB) FindUsersByIDsForAdmin(ctx context.Context, ids []primitive.ObjectID) (map[primitive.ObjectID]models.User, error) {
+	out := make(map[primitive.ObjectID]models.User, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	cur, err := d.users.Find(ctx,
+		bson.M{"_id": bson.M{"$in": ids}},
+		options.Find().SetProjection(bson.M{
+			"_id": 1, "email": 1, "first_name": 1, "last_name": 1,
+			"plan": 1, "role": 1, "beta_access": 1, "created_at": 1, "last_seen_at": 1,
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var rows []models.User
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		out[rows[i].ID] = rows[i]
+	}
+	return out, nil
+}

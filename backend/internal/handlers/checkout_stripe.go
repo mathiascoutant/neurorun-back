@@ -573,11 +573,7 @@ func (h *Handlers) checkoutAmountCents(
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return 0, nil, false
 	}
-	pct := 0
-	if promo != nil {
-		pct = promo.PercentOff
-	}
-	return eurToCents(applyPromoPercent(base, pct)), promo, true
+	return eurToCents(applyPromo(base, promo)), promo, true
 }
 
 // activateFreePlan : activation sans paiement, réservée aux montants à 0 € (promo 100 %).

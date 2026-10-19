@@ -43,6 +43,12 @@ func (h *Handlers) notifyAdminsPlanActivated(u *models.User, plan string) {
 	h.notifyAdmins(models.AdminEventPlanActivated, u, plan, "")
 }
 
+// notifyAdminsAmbassadorSigned — un ambassadeur vient de signer son contrat. Il reste à le
+// contresigner depuis la console pour que le partenariat prenne effet.
+func (h *Handlers) notifyAdminsAmbassadorSigned(u *models.User) {
+	h.notifyAdmins(models.AdminEventAmbassadorSigned, u, u.EffectivePlan(), "")
+}
+
 // notifyAdmins persiste l’évènement puis pousse la notification, en tâche de fond : une panne
 // d’Expo ou de Mongo ne doit jamais faire échouer une inscription ou un paiement.
 func (h *Handlers) notifyAdmins(kind string, u *models.User, plan, device string) {
@@ -107,6 +113,8 @@ func adminNotificationText(kind, name, plan, label, device string) (title, body 
 	switch {
 	case kind == models.AdminEventIOSInstall:
 		return "Nouvelle installation iOS", name + " vient d’ouvrir l’app sur iPhone pour la première fois"
+	case kind == models.AdminEventAmbassadorSigned:
+		return "Contrat d’ambassadeur signé", name + " a signé le contrat — reste à le contresigner"
 	case kind == models.AdminEventPlanActivated:
 		return "Nouvelle offre payante", name + " vient de prendre l’offre " + label
 	case paid:

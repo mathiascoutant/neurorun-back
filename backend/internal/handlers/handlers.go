@@ -471,7 +471,18 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config"})
 		return
 	}
-	writeJSON(w, http.StatusOK, userPublic(u, caps))
+	out := userPublic(u, caps)
+	/*
+		is_ambassador : c’est ce drapeau qui fait apparaître l’onglet Ambassadeur dans
+		l’espace membre. Lu ici plutôt que recopié sur le compte, pour qu’un contrat
+		retiré depuis la console fasse disparaître l’onglet sans migration de données.
+	*/
+	if _, err := h.db.FindAmbassadorByUserID(r.Context(), u.ID); err == nil {
+		out["is_ambassador"] = true
+	} else {
+		out["is_ambassador"] = false
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type patchMeBody struct {
@@ -1564,6 +1575,12 @@ func (h *Handlers) Mount(r chi.Router) {
 		ar.Post("/promo-codes", h.AdminCreatePromo)
 		ar.Patch("/promo-codes/{id}", h.AdminPatchPromo)
 		ar.Delete("/promo-codes/{id}", h.AdminDeletePromo)
+		ar.Get("/ambassadors", h.AdminListAmbassadors)
+		ar.Post("/ambassadors", h.AdminCreateAmbassador)
+		ar.Get("/ambassadors/{id}", h.AdminGetAmbassador)
+		ar.Patch("/ambassadors/{id}", h.AdminPatchAmbassador)
+		ar.Post("/ambassadors/{id}/sign", h.AdminSignAmbassador)
+		ar.Delete("/ambassadors/{id}", h.AdminDeleteAmbassador)
 		ar.Get("/offer-config", h.AdminGetOfferConfig)
 		ar.Put("/offer-config", h.AdminPutOfferConfig)
 		ar.Get("/platforms", h.AdminPlatforms)
@@ -1596,6 +1613,9 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/me", h.Me)
 		pr.Patch("/me", h.PatchMe)
 		pr.Post("/me/delete-account", h.DeleteMyAccount)
+		// Espace ambassadeur : son contrat, sa signature, son code de réduction.
+		pr.Get("/me/ambassador", h.MyAmbassador)
+		pr.Post("/me/ambassador/sign", h.SignMyAmbassadorContract)
 		pr.Get("/strava/dashboard", h.StravaDashboard)
 		pr.Get("/strava/forecast", h.StravaRaceForecast)
 		pr.Post("/strava/forecast/adjust", h.StravaRaceForecastAdjust)
