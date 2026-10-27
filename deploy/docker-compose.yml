@@ -6,6 +6,10 @@
 #   cp .env.example .env && nano .env
 #   docker compose pull && docker compose up -d
 
+# Nom de projet Compose explicite : sans lui, le projet prendrait le nom du dossier
+# (« back » ou « front »), trop générique sur un VPS partagé avec VisionShow et Cerveau.
+name: neurorun-back
+
 services:
   api:
     image: ghcr.io/mathiascoutant/neurorun-back:latest
