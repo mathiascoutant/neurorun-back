@@ -50,6 +50,8 @@ type DB struct {
 	// refreshTokens : sessions longue durée des appareils. Purgées
 	// automatiquement par un index TTL sur expires_at.
 	refreshTokens *mongo.Collection
+	// shoes : paires de chaussures des coureurs, pour le suivi d'usure.
+	shoes *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -108,6 +110,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	pushTokens := database.Collection("push_tokens")
 	vmaTests := database.Collection("vma_tests")
 	refreshTokens := database.Collection("refresh_tokens")
+	shoes := database.Collection("shoes")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -131,6 +134,9 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		),
 	})
 	_, _ = vmaTests.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+	})
+	_, _ = shoes.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
 	})
 	_, _ = vmaTests.Indexes().CreateOne(ctx, mongo.IndexModel{
@@ -224,6 +230,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		boosts:             boosts,
 		pushTokens:         pushTokens,
 		refreshTokens:      refreshTokens,
+		shoes:              shoes,
 	}, nil
 }
 

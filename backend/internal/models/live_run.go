@@ -109,6 +109,12 @@ type LiveRun struct {
 	// SessionType : type choisi au départ (RunTypeFree…). Vide sur les courses
 	// enregistrées avant le choix : elles valent une course libre.
 	SessionType string `bson:"session_type,omitempty" json:"session_type,omitempty"`
+	// ShoeID : paire portée. Posée d'office quand le coureur n'a qu'une paire
+	// active, sinon demandée à son retour dans l'app.
+	ShoeID *primitive.ObjectID `bson:"shoe_id,omitempty" json:"shoe_id,omitempty"`
+	// ShoeSkipped : le coureur a répondu « aucune de ces paires » ; la
+	// question ne revient plus pour cette course.
+	ShoeSkipped bool `bson:"shoe_skipped,omitempty" json:"shoe_skipped,omitempty"`
 
 	TargetKm     float64 `bson:"target_km" json:"target_km"`
 	DistanceM    float64 `bson:"distance_m" json:"distance_m"`

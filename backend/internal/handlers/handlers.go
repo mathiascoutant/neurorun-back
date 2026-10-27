@@ -1690,6 +1690,15 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/live-runs/{id}", h.GetLiveRun)
 		pr.Get("/live-runs/{id}/score", h.GetLiveRunScore)
 		pr.Patch("/live-runs/{id}", h.RenameLiveRun)
+		pr.Put("/live-runs/{id}/shoe", h.SetLiveRunShoe)
+		// Chaussures : paires, usure théorique, paire portée à chaque course.
+		pr.Get("/shoes", h.ListShoes)
+		pr.Get("/shoes/catalog", h.ShoeCatalog)
+		pr.Get("/shoes/history-km", h.ShoeHistoryKm)
+		pr.Get("/shoes/pending-run", h.PendingShoeRun)
+		pr.Post("/shoes", h.CreateShoe)
+		pr.Patch("/shoes/{id}", h.PatchShoe)
+		pr.Delete("/shoes/{id}", h.DeleteShoe)
 		// Test de VMA (6 min) : référence de toutes les notes. Repassable à volonté.
 		pr.Post("/vma-tests", h.CreateVmaTest)
 		pr.Get("/vma", h.GetVma)
