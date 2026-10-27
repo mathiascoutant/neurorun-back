@@ -550,6 +550,22 @@ func (d *DB) UpdateGoalCustomTitleByUser(ctx context.Context, userID, goalID pri
 	return nil
 }
 
+// ClearGoalRaceDate efface le jour de la course. Appelé quand le délai de l'objectif
+// change : la date saisie décrivait l'ancienne échéance et mentirait sur la nouvelle.
+func (d *DB) ClearGoalRaceDate(ctx context.Context, userID, goalID primitive.ObjectID) error {
+	res, err := d.goals.UpdateOne(ctx,
+		bson.M{"_id": goalID, "user_id": userID},
+		bson.M{"$unset": bson.M{"race_date": ""}},
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateGoalTrainingFields remplace le plan Markdown, les séances extraites et les paramètres liés.
 // customOffsets : longueur doit égaler spw et valeurs 0–6 (lun–dim) ; sinon passer nil pour le motif par défaut.
 func (d *DB) UpdateGoalTrainingFields(ctx context.Context, userID, goalID primitive.ObjectID, plan string, planned []models.PlannedSession, weeks, spw int, target string, customOffsets []int, planWithoutStravaData bool) error {

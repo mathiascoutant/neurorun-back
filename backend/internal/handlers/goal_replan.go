@@ -15,7 +15,7 @@ import (
 func (h *Handlers) synthesizeTrainingPlan(
 	ctx context.Context,
 	actsJSON []byte,
-	label, targetTime string,
+	label, terrain, targetTime string,
 	weeks, spw int,
 	hasStravaData bool,
 	onProgress func(planProgress),
@@ -23,6 +23,24 @@ func (h *Handlers) synthesizeTrainingPlan(
 	if weeks < 1 || spw < 1 || weeks > 52 || spw > 7 {
 		return "", nil, errors.New("bad weeks/spw")
 	}
+	// Le terrain change la nature des séances : sur sentier, les min/km ne veulent
+	// plus dire la même chose et c'est le dénivelé qui dose l'effort. Le modèle ne
+	// peut pas le deviner à partir de la distance seule.
+	var terrainRule string
+	if terrain == models.GoalTerrainTrail {
+		terrainRule = `
+
+**Terrain : trail** (chemins et sentiers, dénivelé marqué). Le plan doit en tenir compte :
+- Chiffre le **dénivelé positif (D+)** des sorties longues et des séances de côtes, en mètres.
+- Les allures min/km restent la référence sur le plat ; en montée, raisonne en **effort** ou en durée, et dis explicitement que **marcher en montée** est normal et s'entraîne.
+- Prévois du **travail spécifique** : côtes en montée, descentes techniques (progressivement), une sortie longue sur terrain proche de celui de la course.
+- Pour le chrono visé, rappelle une fois qu'un temps sur trail dépend du dénivelé et du terrain plus que de l'allure sur route.`
+	} else {
+		terrainRule = `
+
+**Terrain : route** (bitume, profil roulant). Les allures en min/km sont la référence d'un bout à l'autre du plan ; pas de séance de dénivelé spécifique à inventer.`
+	}
+
 	var system string
 	if hasStravaData {
 		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces, peu de blocs denses. Niveau accessible : une seule fois, rappelle que min/km = minutes pour parcourir 1 km.
@@ -60,7 +78,7 @@ Pour **chaque** séance (Séance 1, 2, …) une **seule puce** ou une **liste co
 
 Pas de paragraphes de plus de 3 phrases d'affilée. Pas de listes numérotées longues.
 
-**Activités (JSON) :** ` + string(actsJSON)
+**Activités (JSON) :** ` + string(actsJSON) + terrainRule
 	} else {
 		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces. Niveau accessible : une fois, rappelle que min/km = minutes pour parcourir 1 km.
 
@@ -96,15 +114,16 @@ Exactement 3 puces courtes.
 
 Pas de paragraphes trop longs.
 
-**Note** : pas de données d’activités JSON — n’invente pas de stats personnelles.`
+**Note** : pas de données d’activités JSON — n’invente pas de stats personnelles.` + terrainRule
 	}
 
 	userQ := fmt.Sprintf(`Objectif course : %s.
+Type de course : %s.
 Chrono ou intention : %s.
 Échéance dans %d semaine(s).
 Disponibilité : %d séance(s) par semaine en moyenne (toutes les séances de chaque semaine doivent être décrites — pas de jour inventé côté appli : seuls le nombre et le contenu comptent).
 Rédige le plan complet en respectant les titres et le style demandés. Pas de vouvoiement.
-Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des temps par répétition.`, label, targetTime, weeks, spw)
+Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des temps par répétition.`, label, models.GoalTerrainLabel(terrain), targetTime, weeks, spw)
 
 	var plan string
 	var err error

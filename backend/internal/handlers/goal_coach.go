@@ -225,8 +225,9 @@ Tu suis L'OBJECTIF enregistré (distance, chrono, semaines, séances/semaine), s
 
 **Objectif enregistré**
 - Distance : ` + t.goal.DistanceLabel + `
+- Type de course : ` + models.GoalTerrainLabel(t.goal.EffectiveTerrain()) + `
 - Chrono visé : ` + t.goal.TargetTime + `
-- Délai : ` + strconv.Itoa(t.goal.Weeks) + ` semaine(s)
+- Délai : ` + strconv.Itoa(t.goal.Weeks) + ` semaine(s)` + raceDateLine(t.goal.RaceDate) + `
 - Séances / semaine : ` + strconv.Itoa(t.goal.SessionsPerWeek) + `
 
 **Calendrier actuel**
@@ -235,4 +236,13 @@ Tu suis L'OBJECTIF enregistré (distance, chrono, semaines, séances/semaine), s
 ` + planCtx + `
 
 ` + activitiesBlock
+}
+
+// raceDateLine ajoute le jour de la course au récapitulatif envoyé au coach, quand il
+// est connu : sans lui, il ne connaît l'échéance qu'à la semaine près.
+func raceDateLine(raceDate string) string {
+	if strings.TrimSpace(raceDate) == "" {
+		return ""
+	}
+	return "\n- Date de la course : " + raceDate
 }

@@ -236,7 +236,7 @@ func (h *Handlers) ReplanGoalWithStravaStream(w http.ResponseWriter, r *http.Req
 	actsJSON, _ := json.Marshal(acts)
 
 	plan, planned, err := h.synthesizeTrainingPlan(
-		r.Context(), actsJSON, g.DistanceLabel, g.TargetTime, g.Weeks, g.SessionsPerWeek, true,
+		r.Context(), actsJSON, g.DistanceLabel, g.EffectiveTerrain(), g.TargetTime, g.Weeks, g.SessionsPerWeek, true,
 		func(p planProgress) { sse.send(p) },
 	)
 	if err != nil {
@@ -315,7 +315,7 @@ func (h *Handlers) CreateGoalStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	plan, planned, err := h.synthesizeTrainingPlan(
-		r.Context(), actsJSON, label, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData,
+		r.Context(), actsJSON, label, b.Terrain, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData,
 		func(p planProgress) { sse.send(p) },
 	)
 	if err != nil {
@@ -327,6 +327,8 @@ func (h *Handlers) CreateGoalStream(w http.ResponseWriter, r *http.Request) {
 		UserID:                u.ID,
 		DistanceKm:            distKm,
 		DistanceLabel:         label,
+		Terrain:               b.Terrain,
+		RaceDate:              b.RaceDate,
 		Weeks:                 b.Weeks,
 		SessionsPerWeek:       b.SessionsPerWeek,
 		TargetTime:            targetTime,

@@ -36,11 +36,35 @@ type Unavailability struct {
 	Reason string `bson:"reason,omitempty" json:"reason,omitempty"`
 }
 
+// Terrain d'une course. Une prépa de trail ne se chiffre pas comme une prépa de
+// route : le dénivelé prime sur l'allure, la marche en montée fait partie de la
+// course, et les min/km d'une sortie sur sentier ne se comparent pas au bitume.
+const (
+	GoalTerrainRoad  = "road"
+	GoalTerrainTrail = "trail"
+)
+
+// GoalTerrainLabel décrit le terrain au coach, en français : c'est ce libellé qui
+// part dans les consignes de rédaction du plan.
+func GoalTerrainLabel(terrain string) string {
+	if terrain == GoalTerrainTrail {
+		return "trail (chemins et sentiers, dénivelé marqué)"
+	}
+	return "course à pied sur route (bitume, profil roulant)"
+}
+
 type Goal struct {
 	ID               primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	UserID           primitive.ObjectID `bson:"user_id" json:"-"` // jamais exposé au client
 	DistanceKm       float64            `bson:"distance_km" json:"distance_km"`
 	DistanceLabel    string             `bson:"distance_label" json:"distance_label"`
+	// Terrain : "road" ou "trail". Absent sur les objectifs créés avant ce champ —
+	// passer par EffectiveTerrain plutôt que de lire la valeur brute.
+	Terrain          string             `bson:"terrain,omitempty" json:"terrain,omitempty"`
+	// RaceDate : jour de la course au format AAAA-MM-JJ, quand la personne l'a indiqué
+	// plutôt qu'un nombre de semaines. C'est la vraie échéance : Weeks n'en est qu'une
+	// approximation arrondie à la semaine. Vide = échéance déduite de Weeks.
+	RaceDate         string             `bson:"race_date,omitempty" json:"race_date,omitempty"`
 	// CustomTitle : libellé choisi par l’utilisateur (affiché à la place de distance_label si non vide).
 	CustomTitle      string             `bson:"custom_title,omitempty" json:"custom_title,omitempty"`
 	Weeks            int                `bson:"weeks" json:"weeks"`
@@ -58,4 +82,13 @@ type Goal struct {
 	// PlanWithoutStravaData : plan généré sans JSON d’activités (objectif seul) ; repasse à false après régénération avec Strava.
 	PlanWithoutStravaData bool `bson:"plan_without_strava_data,omitempty" json:"plan_without_strava_data,omitempty"`
 	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`
+}
+
+// EffectiveTerrain : les objectifs antérieurs à ce champ décrivent tous une course
+// sur route, et toute valeur inattendue retombe sur ce même défaut.
+func (g *Goal) EffectiveTerrain() string {
+	if g.Terrain == GoalTerrainTrail {
+		return GoalTerrainTrail
+	}
+	return GoalTerrainRoad
 }

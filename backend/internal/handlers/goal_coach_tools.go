@@ -692,7 +692,7 @@ func (t *goalCoachTools) updateGoalSettings(ctx context.Context, args map[string
 	}
 
 	plan, planned, err := t.h.synthesizeTrainingPlan(
-		ctx, t.actsJSON, t.goal.DistanceLabel, target, weeks, spw, t.hasStrava, nil,
+		ctx, t.actsJSON, t.goal.DistanceLabel, t.goal.EffectiveTerrain(), target, weeks, spw, t.hasStrava, nil,
 	)
 	if err != nil {
 		return toolFailure("la réécriture du plan a échoué, rien n'a été modifié")
@@ -701,6 +701,13 @@ func (t *goalCoachTools) updateGoalSettings(ctx context.Context, args map[string
 		ctx, t.userID, t.goalID, plan, planned, weeks, spw, target, offsets, !t.hasStrava,
 	); err != nil {
 		return toolFailure("enregistrement impossible")
+	}
+	// Le délai a bougé : la date de course saisie à la création décrivait l'ancienne
+	// échéance, le compte à rebours repart donc des semaines.
+	if weeks != t.goal.Weeks && strings.TrimSpace(t.goal.RaceDate) != "" {
+		if err := t.h.db.ClearGoalRaceDate(ctx, t.userID, t.goalID); err == nil {
+			t.goal.RaceDate = ""
+		}
 	}
 	t.goal.CalendarDayOffsets = offsets
 	t.goal.SessionOverrides = overrides
@@ -720,7 +727,7 @@ func (t *goalCoachTools) updateGoalSettings(ctx context.Context, args map[string
 
 func (t *goalCoachTools) regeneratePlan(ctx context.Context, args map[string]any) string {
 	plan, planned, err := t.h.synthesizeTrainingPlan(
-		ctx, t.actsJSON, t.goal.DistanceLabel, t.goal.TargetTime,
+		ctx, t.actsJSON, t.goal.DistanceLabel, t.goal.EffectiveTerrain(), t.goal.TargetTime,
 		t.goal.Weeks, t.goal.SessionsPerWeek, t.hasStrava, nil,
 	)
 	if err != nil {

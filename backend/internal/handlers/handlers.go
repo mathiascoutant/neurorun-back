@@ -890,6 +890,8 @@ type goalBody struct {
 	Weeks           int     `json:"weeks"`
 	SessionsPerWeek int     `json:"sessions_per_week"`
 	TargetTime      string  `json:"target_time"`
+	Terrain         string  `json:"terrain"`   // "road" ou "trail" ; absent → route
+	RaceDate        string  `json:"race_date"` // AAAA-MM-JJ ; vide → échéance déduite de Weeks
 }
 
 // validateGoalPayload lit et valide le corps JSON d'un objectif. errHTTP==0 si OK.
@@ -924,6 +926,34 @@ func validateGoalPayload(r *http.Request) (b goalBody, label string, distKm floa
 	}
 	if utf8.RuneCountInString(targetTime) > 120 {
 		return goalBody{}, "", 0, "", http.StatusBadRequest, "temps visé trop long (120 caractères max)"
+	}
+	// La date de course est facultative : sans elle, l'échéance reste déduite des semaines.
+	if raceDate := strings.TrimSpace(b.RaceDate); raceDate != "" {
+		d, err := time.Parse("2006-01-02", raceDate)
+		if err != nil {
+			return goalBody{}, "", 0, "", http.StatusBadRequest, "date de course invalide (AAAA-MM-JJ)"
+		}
+		now := time.Now().UTC()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		if d.Before(today) {
+			return goalBody{}, "", 0, "", http.StatusBadRequest, "date de course déjà passée"
+		}
+		// Même plafond que les semaines (52), exprimé en jours.
+		if d.After(today.AddDate(0, 0, 52*7)) {
+			return goalBody{}, "", 0, "", http.StatusBadRequest, "date de course à plus de 52 semaines"
+		}
+		b.RaceDate = d.Format("2006-01-02")
+	} else {
+		b.RaceDate = ""
+	}
+	// Terrain absent : les clients qui ne l'envoient pas décrivent une course sur route.
+	switch strings.ToLower(strings.TrimSpace(b.Terrain)) {
+	case "", models.GoalTerrainRoad:
+		b.Terrain = models.GoalTerrainRoad
+	case models.GoalTerrainTrail:
+		b.Terrain = models.GoalTerrainTrail
+	default:
+		return goalBody{}, "", 0, "", http.StatusBadRequest, "terrain doit être road ou trail"
 	}
 	return b, label, distKm, targetTime, 0, ""
 }
@@ -1285,73 +1315,89 @@ func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b, label, _, targetTime, errHTTP, errMsg := validateGoalPayload(r)
+	b, label, distKm, targetTime, errHTTP, errMsg := validateGoalPayload(r)
 	if errHTTP != 0 {
 		writeJSON(w, errHTTP, map[string]string{"error": errMsg})
 		return
 	}
 
-	userQ := `Objectif course : ` + label + `.
-Chrono ou intention : ` + targetTime + `.
-Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
-Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
-Donne uniquement le verdict et la justification demandés.`
-
-	var system string
+	var acts []map[string]any
 	if u.HasStrava() {
 		access, err := h.ensureStravaAccess(r.Context(), u)
 		if err != nil {
 			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
-		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+		acts, err = h.strava.ActivitiesSummary(r.Context(), access, 50)
 		if err != nil {
 			h.writeStravaError(w, r, u, err, "erreur Strava")
 			return
 		}
+	}
+	// Le verdict se calcule sur les sorties ; le coach ne fait que l'expliquer.
+	facts := assessFeasibility(acts, distKm, targetTime, b.Weeks, b.SessionsPerWeek, b.Terrain == models.GoalTerrainTrail)
+
+	userQ := `Objectif course : ` + label + `.
+Type de course : ` + models.GoalTerrainLabel(b.Terrain) + `.
+Chrono ou intention : ` + targetTime + `.
+Échéance dans ` + strconv.Itoa(b.Weeks) + ` semaine(s).
+Disponibilité : ` + strconv.Itoa(b.SessionsPerWeek) + ` séance(s) par semaine en moyenne.
+
+` + factsForPrompt(facts) + `
+Donne uniquement le verdict et la justification demandés.`
+
+	rules := `Règles de lecture, à ne jamais inverser :
+- Un chrono visé PLUS LENT que le niveau actuel est FACILE : il ne demande aucune progression. Ne le présente jamais comme irréaliste ; propose plutôt de viser plus vite.
+- Un chrono visé plus rapide que le niveau actuel demande de progresser : compare l'écart à la progression raisonnable indiquée dans les faits.
+- Reprends les chiffres des FAITS CALCULÉS tels quels ; n'en invente aucun autre.
+- Ne cite jamais une sortie de moins de 3 km comme preuve de niveau : trop courte pour dire quelque chose de l'endurance.
+- Écris les nombres à la française : virgule décimale (« 10,1 km »), allures en min:s/km (« 5:24/km »).`
+
+	var system string
+	if u.HasStrava() {
 		actsJSON, _ := json.Marshal(acts)
 		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT, phrases courtes (une idée par phrase). Niveau débutant : évite le jargon ou explique en une parenthèse (ex. « allure = minutes pour faire 1 km »).
 
-Tu reçois des activités Strava en JSON + un objectif (distance, chrono visé, semaines avant la course, séances/semaine).
+Tu reçois un objectif, des FAITS CALCULÉS sur les sorties Strava (niveau actuel, écart avec le chrono visé) et les activités en JSON pour le contexte (fréquence, régularité, distances).
+
+` + rules + `
 
 Ton ton est bienveillant et **inclusif** : pas de stéréotypes de genre ou de « niveau normal » ; formulations ouvertes. Rappelle en une phrase qu'on peut parler du ressenti, de la fatigue ou des douleurs avec le coach dans le fil prévu sur l'objectif.
 
 Réponds UNIQUEMENT avec ce format Markdown (rien d'autre — pas de plan d'entraînement ) :
 
 ## Verdict
-Une seule ligne parmi :
-**Réaliste** ou **Ambitieux mais jouable** ou **Très tendu / peu réaliste**
+` + verdictInstruction(facts) + `
 
 ## En une phrase
-Une phrase simple qui résume pourquoi.
+Une phrase simple qui résume pourquoi, en citant le niveau actuel et le chrono visé.
 
 ## Pourquoi (tes données)
-3 à 5 puces maximum. Appuie-toi sur le JSON (allures, fréquence des sorties, distances). Pas de chiffres inventés.
+3 à 4 puces maximum, appuyées sur les faits calculés et le JSON (régularité, distances).
 
 ## Conseil si tu veux progresser
-2 ou 3 puces : que pourrais-tu ajuster (chrono plus large, plus de semaines, ou plus de séances) ?
-
-Ne invente pas de chiffres absents du JSON.
+2 ou 3 puces : que pourrais-tu ajuster (chrono plus ambitieux ou plus large, plus de semaines, plus ou moins de séances) ?
 
 **Activités (JSON) :** ` + string(actsJSON)
 	} else {
 		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT, phrases courtes. Niveau débutant : évite le jargon ou explique en une parenthèse (ex. « allure = minutes pour faire 1 km »).
 
-Tu n’as **pas** d’historique d’activités : tu te bases **uniquement** sur l’objectif déclaré (distance, chrono ou intention, délai, séances par semaine). Reste prudent : repères généraux, pas de stats inventées. Une phrase peut inviter à lier Strava plus tard pour affiner avec de vraies sorties.
+Tu n’as **pas** d’historique d’activités : tu te bases sur l’objectif déclaré et les FAITS CALCULÉS (allure visée). Reste prudent : repères généraux, pas de stats inventées. Une phrase peut inviter à lier Strava plus tard pour affiner avec de vraies sorties.
+
+` + rules + `
 
 Ton ton est bienveillant et **inclusif**.
 
 Réponds UNIQUEMENT avec ce format Markdown (rien d'autre — pas de plan d'entraînement ) :
 
 ## Verdict
-Une seule ligne parmi :
-**Réaliste** ou **Ambitieux mais jouable** ou **Très tendu / peu réaliste**
+` + verdictInstruction(facts) + `
 
 ## En une phrase
 Une phrase simple qui résume pourquoi.
 
 ## Pourquoi (sans historique importé)
-3 à 5 puces : raisonne sur le délai, le volume hebdomadaire plausible et l’ambition du chrono par rapport à une progression typique — sans prétendre connaître l’entraînement réel de la personne.
+3 à 4 puces : raisonne sur l’allure visée, le délai et le nombre de séances — sans prétendre connaître l’entraînement réel de la personne.
 
 ## Conseil si tu veux progresser
 2 ou 3 puces : ajuster le chrono, le délai ou le nombre de séances ; mentionner que lier Strava permet un avis plus précis.`
@@ -1362,7 +1408,7 @@ Une phrase simple qui résume pourquoi.
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"feasibility": text})
+	writeJSON(w, http.StatusOK, map[string]any{"feasibility": text, "facts": facts})
 }
 
 func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
@@ -1395,7 +1441,7 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 		actsJSON = []byte("[]")
 	}
 
-	plan, planned, err := h.synthesizeTrainingPlan(r.Context(), actsJSON, label, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData, nil)
+	plan, planned, err := h.synthesizeTrainingPlan(r.Context(), actsJSON, label, b.Terrain, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
@@ -1407,6 +1453,8 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 		UserID:                u.ID,
 		DistanceKm:            distKm,
 		DistanceLabel:         label,
+		Terrain:               b.Terrain,
+		RaceDate:              b.RaceDate,
 		Weeks:                 b.Weeks,
 		SessionsPerWeek:       b.SessionsPerWeek,
 		TargetTime:            targetTime,
@@ -1470,7 +1518,7 @@ func (h *Handlers) ReplanGoalWithStrava(w http.ResponseWriter, r *http.Request) 
 	actsJSON, _ := json.Marshal(acts)
 
 	plan, planned, err := h.synthesizeTrainingPlan(
-		r.Context(), actsJSON, g.DistanceLabel, g.TargetTime, g.Weeks, g.SessionsPerWeek, true, nil,
+		r.Context(), actsJSON, g.DistanceLabel, g.EffectiveTerrain(), g.TargetTime, g.Weeks, g.SessionsPerWeek, true, nil,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
