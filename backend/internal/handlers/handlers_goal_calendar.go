@@ -52,8 +52,19 @@ func (h *Handlers) GoalCalendar(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Courses NeuroRun lancées depuis une séance : sans elles, une séance courue
+	// la veille ou le lendemain resterait « manquée ».
+	var linked []goalcalendar.LinkedRun
+	if lives, err := h.db.ListLiveRunsForGoal(r.Context(), u.ID, g.ID); err == nil {
+		for _, lr := range lives {
+			if l, ok := goalcalendar.LinkedRunFromLive(lr); ok {
+				linked = append(linked, l)
+			}
+		}
+	}
+
 	loc, tzName := calendarLocation()
-	items := goalcalendar.BuildCalendarItems(g, runs, loc, time.Now().UTC(), h.effortPaceResolver(r, u))
+	items := goalcalendar.BuildCalendarItems(g, runs, linked, loc, time.Now().UTC(), h.effortPaceResolver(r, u))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"timezone":         tzName,
 		"items":            items,

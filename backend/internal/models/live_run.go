@@ -119,6 +119,9 @@ type LiveRun struct {
 	// ShoeSkipped : le coureur a répondu « aucune de ces paires » ; la
 	// question ne revient plus pour cette course.
 	ShoeSkipped bool `bson:"shoe_skipped,omitempty" json:"shoe_skipped,omitempty"`
+	// GoalSession : séance d'objectif lancée depuis l'app. La course compte pour
+	// elle même courue la veille ou le lendemain de son jour.
+	GoalSession *LiveRunGoalSession `bson:"goal_session,omitempty" json:"goal_session,omitempty"`
 
 	TargetKm     float64 `bson:"target_km" json:"target_km"`
 	DistanceM    float64 `bson:"distance_m" json:"distance_m"`
@@ -141,6 +144,13 @@ type LiveRun struct {
 	ScreenH           int    `bson:"screen_h,omitempty" json:"screen_h,omitempty"`
 	OnlineAtEnd       bool   `bson:"online_at_end,omitempty" json:"online_at_end,omitempty"`
 	AutoPauseDetected bool   `bson:"auto_pause_detected,omitempty" json:"auto_pause_detected,omitempty"`
+}
+
+// LiveRunGoalSession : séance du plan (semaine, numéro) d'un objectif.
+type LiveRunGoalSession struct {
+	GoalID  primitive.ObjectID `bson:"goal_id" json:"goal_id"`
+	Week    int                `bson:"week" json:"week"`
+	Session int                `bson:"session" json:"session"`
 }
 
 // LiveRunListItem : résumé pour GET /api/live-runs (sans trace complète).

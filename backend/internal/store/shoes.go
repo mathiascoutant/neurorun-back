@@ -192,3 +192,25 @@ func (d *DB) ListLiveRunsSince(ctx context.Context, userID primitive.ObjectID, s
 	}
 	return out, cur.Err()
 }
+
+// ListLiveRunsForGoal : courses lancées depuis une séance de cet objectif, sans trace.
+func (d *DB) ListLiveRunsForGoal(ctx context.Context, userID, goalID primitive.ObjectID) ([]models.LiveRun, error) {
+	opts := options.Find().SetProjection(bson.M{"track_points": 0, "splits": 0})
+	cur, err := d.liveRuns.Find(ctx, bson.M{
+		"user_id":              userID,
+		"goal_session.goal_id": goalID,
+	}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.LiveRun
+	for cur.Next(ctx) {
+		var lr models.LiveRun
+		if err := cur.Decode(&lr); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, cur.Err()
+}

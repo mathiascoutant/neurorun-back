@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"runapp/internal/geo"
+	"runapp/internal/goalcalendar"
 	"runapp/internal/models"
 	"runapp/internal/store"
 	"runapp/internal/strava"
@@ -45,6 +46,8 @@ type liveRunCreateBody struct {
 
 	// SessionType : type choisi au départ (free, endurance, interval).
 	SessionType string `json:"session_type"`
+	// GoalSession : séance d'objectif lancée depuis l'app, facultative.
+	GoalSession *liveRunGoalSessionBody `json:"goal_session"`
 
 	ClientVersion     string `json:"client_version"`
 	UserAgent         string `json:"user_agent"`
@@ -53,6 +56,40 @@ type liveRunCreateBody struct {
 	ScreenH           int    `json:"screen_h"`
 	OnlineAtEnd       bool   `json:"online_at_end"`
 	AutoPauseDetected bool   `json:"auto_pause_detected"`
+}
+
+type liveRunGoalSessionBody struct {
+	GoalID  string `json:"goal_id"`
+	Week    int    `json:"week"`
+	Session int    `json:"session"`
+}
+
+// goalSessionFor valide le rattachement demandé : objectif à soi, séance
+// maintenue, courue à un jour près. Un rattachement invalide est ignoré plutôt
+// que refusé — une course de montre rejetée en 400 serait jetée de la file.
+func (h *Handlers) goalSessionFor(
+	ctx context.Context,
+	userID primitive.ObjectID,
+	b *liveRunGoalSessionBody,
+	start time.Time,
+) *models.LiveRunGoalSession {
+	if b == nil || b.Week < 1 || b.Session < 1 {
+		return nil
+	}
+	gid, err := primitive.ObjectIDFromHex(strings.TrimSpace(b.GoalID))
+	if err != nil {
+		return nil
+	}
+	g, err := h.db.GetGoalByUser(ctx, userID, gid)
+	if err != nil {
+		return nil
+	}
+	loc, _ := calendarLocation()
+	s, ok := goalcalendar.FindScheduled(goalcalendar.ResolveSchedule(g, loc), b.Week, b.Session)
+	if !ok || !goalcalendar.CanLinkRun(s, start, loc) {
+		return nil
+	}
+	return &models.LiveRunGoalSession{GoalID: gid, Week: b.Week, Session: b.Session}
 }
 
 func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +173,7 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 	// course : elle juge l'exécution du jour. Sans test de VMA, pas de note.
 	run.Score = h.scoreLiveRun(r.Context(), u, &run)
 	run.ShoeID = h.defaultShoeFor(r.Context(), u.ID)
+	run.GoalSession = h.goalSessionFor(r.Context(), u.ID, b.GoalSession, goalcalendar.LiveRunStart(run))
 
 	if err := h.db.CreateLiveRun(r.Context(), &run); err != nil {
 		// Course déjà enregistrée entre-temps (deux réessais simultanés) :
