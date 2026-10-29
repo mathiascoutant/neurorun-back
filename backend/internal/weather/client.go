@@ -8,6 +8,8 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -50,14 +52,22 @@ type Client struct {
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
+	daily map[string]dailyEntry
 }
 
 func New() *Client {
+	forecast := forecastURL
+	// Réservé aux essais de bout en bout : un faux Open-Meteo local, pour voir
+	// une journée de verglas sans attendre l'hiver.
+	if u := strings.TrimSpace(os.Getenv("OPEN_METEO_FORECAST_URL")); u != "" {
+		forecast = u
+	}
 	return &Client{
 		http:        &http.Client{Timeout: 5 * time.Second},
-		forecastURL: forecastURL,
+		forecastURL: forecast,
 		archiveURL:  archiveURL,
 		cache:       map[string]cacheEntry{},
+		daily:       map[string]dailyEntry{},
 	}
 }
 

@@ -545,3 +545,25 @@ func (d *DB) ListPushTokensByUser(ctx context.Context, userID primitive.ObjectID
 	}
 	return out, nil
 }
+
+// ListPushTokensByUsers : appareils de plusieurs comptes en une requête, pour un
+// même message envoyé à tous (nouvelle course d'un ami).
+func (d *DB) ListPushTokensByUsers(ctx context.Context, userIDs []primitive.ObjectID) ([]string, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	cur, err := d.pushTokens.Find(ctx, bson.M{"user_id": bson.M{"$in": userIDs}})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var rows []models.PushToken
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for i := range rows {
+		out = append(out, rows[i].Token)
+	}
+	return out, nil
+}

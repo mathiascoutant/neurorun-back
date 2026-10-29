@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -639,16 +638,10 @@ func (h *Handlers) DeletePushToken(w http.ResponseWriter, r *http.Request) {
 // les jetons que Expo signale comme morts.
 func (h *Handlers) sendToUser(ctx context.Context, userID primitive.ObjectID, m push.Message) {
 	tokens, err := h.db.ListPushTokensByUser(ctx, userID)
-	if err != nil || len(tokens) == 0 {
+	if err != nil {
 		return
 	}
-	invalid, err := h.pushClient.Send(ctx, tokens, m)
-	if err != nil && !errors.Is(err, push.ErrNotConfigured) {
-		log.Printf("push social: envoi: %v", err)
-	}
-	if len(invalid) > 0 {
-		_ = h.db.DeletePushTokens(ctx, invalid)
-	}
+	h.sendToTokens(ctx, tokens, m)
 }
 
 func (h *Handlers) notifyBoost(from *models.User, run *models.LiveRun, kind string) {

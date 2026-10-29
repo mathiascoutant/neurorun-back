@@ -51,6 +51,11 @@ func main() {
 
 	h := handlers.New(cfg, db)
 
+	// Passe du matin : séances à décaler par mauvais temps, proposées au coureur.
+	nudgeCtx, stopNudges := context.WithCancel(context.Background())
+	defer stopNudges()
+	go h.RunCoachNudges(nudgeCtx)
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)

@@ -52,6 +52,13 @@ type DB struct {
 	refreshTokens *mongo.Collection
 	// shoes : paires de chaussures des coureurs, pour le suivi d'usure.
 	shoes *mongo.Collection
+	// liveSessions / liveBoosts : courses en cours annoncées aux amis, et les
+	// encouragements reçus pendant l'effort.
+	liveSessions *mongo.Collection
+	liveBoosts   *mongo.Collection
+	// coachSuggestions : propositions du coach (séance à décaler par mauvais
+	// temps), en attente de la réponse du coureur.
+	coachSuggestions *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -111,6 +118,9 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	vmaTests := database.Collection("vma_tests")
 	refreshTokens := database.Collection("refresh_tokens")
 	shoes := database.Collection("shoes")
+	liveSessions := database.Collection("live_sessions")
+	liveBoosts := database.Collection("live_boosts")
+	coachSuggestions := database.Collection("coach_suggestions")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -210,6 +220,28 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		Keys:    bson.D{{Key: "expires_at", Value: 1}},
 		Options: options.Index().SetExpireAfterSeconds(0),
 	})
+	_, _ = liveSessions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "started_at", Value: -1}},
+	})
+	// Une session n'a plus d'intérêt une fois la course finie depuis longtemps :
+	// purge un jour après son expiration, le temps qu'un boost tardif soit relu.
+	_, _ = liveSessions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "expires_at", Value: 1}},
+		Options: options.Index().SetExpireAfterSeconds(24 * 3600),
+	})
+	_, _ = liveBoosts.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "session_id", Value: 1}, {Key: "created_at", Value: 1}},
+	})
+	_, _ = liveBoosts.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "created_at", Value: 1}},
+		Options: options.Index().SetExpireAfterSeconds(3 * 24 * 3600),
+	})
+	// Une suggestion par objectif et par jour : c'est ce qui rend la passe du
+	// matin rejouable sans renvoyer la notification.
+	_, _ = coachSuggestions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "goal_id", Value: 1}, {Key: "day", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
 	return &DB{
 		client:        client,
 		database:      database,
@@ -231,6 +263,9 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		pushTokens:         pushTokens,
 		refreshTokens:      refreshTokens,
 		shoes:              shoes,
+		liveSessions:       liveSessions,
+		liveBoosts:         liveBoosts,
+		coachSuggestions:   coachSuggestions,
 	}, nil
 }
 

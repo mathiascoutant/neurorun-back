@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -201,6 +202,14 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Pas de note : l'app propose le test de VMA sur l'écran de fin.
 		resp["needs_vma_test"] = !h.userHasVmaTest(r.Context(), u.ID)
+	}
+	// Uniquement ici, sur une vraie création : un réessai de la montre (duplicate)
+	// ressort plus haut et ne renotifie pas les amis.
+	h.notifyFriendsOfRun(u, &run)
+	// La course est arrivée : son direct s'arrête, même si l'appareil n'a pas pu
+	// le dire lui-même (réseau coupé à l'arrivée, app tuée).
+	if err := h.db.EndOpenLiveSessions(r.Context(), u.ID, goalcalendar.LiveRunStart(run).Add(time.Minute)); err != nil {
+		log.Printf("course en direct: clôture: %v", err)
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
