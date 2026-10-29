@@ -22,6 +22,7 @@ import (
 	"runapp/internal/push"
 	"runapp/internal/store"
 	"runapp/internal/strava"
+	"runapp/internal/weather"
 
 	appstoreapi "github.com/awa/go-iap/appstore/api"
 	"github.com/go-chi/chi/v5"
@@ -40,6 +41,9 @@ type Handlers struct {
 	apple *appstoreapi.StoreClient
 	// pushClient : notifications admin (inscriptions) via Expo Push.
 	pushClient *push.Client
+	// weather : météo des courses (Open-Meteo). nil dans les tests : pas de
+	// correction de chaleur.
+	weather *weather.Client
 
 	offerMu     sync.RWMutex
 	offerCache  *models.OfferConfig
@@ -63,6 +67,7 @@ func New(cfg *config.Config, db *store.DB) *Handlers {
 		strava:     strava.New(cfg.StravaClientID, cfg.StravaClientSecret),
 		openai:     oai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel),
 		pushClient: push.New(cfg.ExpoAccessToken),
+		weather:    weather.New(),
 	}
 	if cfg.StripeConfigured() {
 		h.stripe = stripeclient.New(cfg.StripeSecretKey, nil)
@@ -1696,6 +1701,9 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/shoes/catalog", h.ShoeCatalog)
 		pr.Get("/shoes/history-km", h.ShoeHistoryKm)
 		pr.Get("/shoes/pending-run", h.PendingShoeRun)
+		pr.Get("/shoes/suggest", h.SuggestShoe)
+		// Météo heure par heure : allure du jour corrigée de la chaleur.
+		pr.Get("/weather/hours", h.WeatherHours)
 		pr.Post("/shoes", h.CreateShoe)
 		pr.Patch("/shoes/{id}", h.PatchShoe)
 		pr.Delete("/shoes/{id}", h.DeleteShoe)

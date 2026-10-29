@@ -471,11 +471,16 @@ func (h *Handlers) PendingShoeRun(w http.ResponseWriter, r *http.Request) {
 	if run.ClientStats != nil && run.ClientStats.ElevationGainM > 0 {
 		recap["elevation_gain_m"] = run.ClientStats.ElevationGainM
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"run":       recap,
 		"shoes":     active,
 		"remaining": remaining,
-	})
+	}
+	// Paire à cocher d'avance : il ne reste qu'à valider d'un geste.
+	if s := h.guessRunShoe(r.Context(), u.ID, run, active); s != nil {
+		resp["suggestion"] = map[string]string{"shoe_id": s.ShoeID, "reason": s.Reason}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type liveRunShoeBody struct {

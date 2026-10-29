@@ -104,6 +104,11 @@ const (
 	decouplingPower      = 1.75
 	// Kilomètres avec FC nécessaires pour la mesurer (premier km exclu).
 	minDecouplingKms = 3
+
+	// Par forte chaleur, le cœur dérive même sur une sortie bien menée : on
+	// tolère la moitié du ralentissement dû à la chaleur (5 % de chaleur →
+	// 2,5 points de dérive offerts).
+	heatDecouplingShare = 0.5
 )
 
 // Poids des composantes hors course à fond. Une composante absente (pas de
@@ -172,6 +177,10 @@ type Input struct {
 
 	// SessionType force le type de séance ; vide = détection par l'allure.
 	SessionType string
+
+	// HeatPct : ralentissement dû à la chaleur, en % (0 = temps frais ou météo
+	// inconnue). La course est alors jugée sur la VMA que la chaleur laisse.
+	HeatPct float64
 }
 
 // KmScore : détail d'un kilomètre dans la note.
@@ -254,6 +263,10 @@ type Result struct {
 	// HrInZonePct : part du temps passé sous le plafond cardio.
 	HrInZonePct   *float64 `json:"hr_in_zone_pct,omitempty"`
 	DecouplingPct *float64 `json:"decoupling_pct,omitempty"`
+
+	// HeatPct : correction de chaleur appliquée, en %. Les allures cibles et
+	// les zones affichées en tiennent déjà compte ; VmaKmh reste la VMA du test.
+	HeatPct float64 `json:"heat_pct,omitempty"`
 }
 
 // curvePoints : 100 · exp(-(x / falloff) ^ power), 100 pour un écart nul.
@@ -338,7 +351,15 @@ func Score(in Input) Result {
 		return res
 	}
 
-	target := TargetFor(in.VmaKmh, in.DistanceKm)
+	// Par 29 °C et 70 % d'humidité, tenir 5:05 coûte ce que coûterait 5:22 au
+	// frais : toutes les cibles se lisent sur la VMA disponible ce jour-là.
+	vmaKmh := in.VmaKmh
+	if in.HeatPct > 0 {
+		res.HeatPct = in.HeatPct
+		vmaKmh = in.VmaKmh / (1 + in.HeatPct/100)
+	}
+
+	target := TargetFor(vmaKmh, in.DistanceKm)
 	res.TargetPaceSecPerKm = target.PaceSecPerKm
 	res.TargetTimeSec = target.TimeSec
 	chronoDelta := in.MovingSec - target.TimeSec
@@ -358,7 +379,7 @@ func Score(in Input) Result {
 		return res
 	}
 
-	intensity := in.DistanceKm / (in.MovingSec / 3600) / in.VmaKmh
+	intensity := in.DistanceKm / (in.MovingSec / 3600) / vmaKmh
 	res.IntensityPct = math.Round(intensity*1000) / 10
 	res.SessionType, res.SessionAuto = in.SessionType, false
 	if res.SessionType == SessionInterval && !in.Intervals.usable() {
@@ -374,7 +395,7 @@ func Score(in Input) Result {
 
 	var points map[string]float64
 	if res.SessionType == SessionInterval {
-		points = scoreIntervals(&res, in.Intervals, in.VmaKmh)
+		points = scoreIntervals(&res, in.Intervals, vmaKmh)
 	} else if res.SessionType == SessionRace {
 		points = scoreRace(&res, complete, target, chronoDelta, in.DistanceKm)
 		// Nettement plus rapide que prévu : la VMA de référence a vieilli. Ce
@@ -382,7 +403,7 @@ func Score(in Input) Result {
 		// et sur un marathon.
 		res.StaleVmaHint = chronoDelta/target.TimeSec*100 < -staleVmaPct
 	} else {
-		points = scoreSteady(&res, complete, hr, in.VmaKmh, in.DistanceKm)
+		points = scoreSteady(&res, complete, hr, vmaKmh, in.DistanceKm)
 	}
 
 	paceStats(&res, complete)
@@ -521,7 +542,8 @@ func scoreSteady(res *Result, complete []Split, hr hrAnalysis, vmaKmh, distanceK
 		res.HrInZonePct = &inZonePct
 	}
 	if hr.decoupling != nil {
-		points["decoupling"] = curvePoints(math.Max(0, *hr.decoupling), decouplingFalloffPct, decouplingPower)
+		judged := *hr.decoupling - res.HeatPct*heatDecouplingShare
+		points["decoupling"] = curvePoints(math.Max(0, judged), decouplingFalloffPct, decouplingPower)
 		d := math.Round(*hr.decoupling*10) / 10
 		res.DecouplingPct = &d
 	}

@@ -531,3 +531,41 @@ func componentOf(r Result, key string) (int, bool) {
 	}
 	return 0, false
 }
+
+func TestCanicule(t *testing.T) {
+	// 10 km à fond à VMA 15 : au frais, l'objectif tombe vers 4:40/km. Par
+	// 29 °C et 70 % d'humidité (5,6 %), courir 15 s/km plus lent est le bon
+	// tempo, pas une contre-performance.
+	cool := TargetFor(15, 10)
+	hot := cool.PaceSecPerKm * 1.056
+	paces := make([]float64, 10)
+	for i := range paces {
+		paces[i] = hot
+	}
+	in := Input{Splits: splitsAt(paces...), DistanceKm: 10, MovingSec: totalOf(paces), VmaKmh: 15, SessionType: SessionRace}
+
+	frais := Score(in)
+	in.HeatPct = 5.6
+	chaud := Score(in)
+	if chaud.Total < 95 || frais.Total > 80 {
+		t.Fatalf("même course : %d au frais, %d corrigée de la chaleur", frais.Total, chaud.Total)
+	}
+	if chaud.HeatPct != 5.6 || chaud.VmaKmh != 15 {
+		t.Fatalf("la VMA affichée doit rester celle du test : %+v", chaud)
+	}
+	if math.Abs(chaud.TargetPaceSecPerKm-hot) > 1 {
+		t.Fatalf("allure cible corrigée : %.0f, attendu %.0f", chaud.TargetPaceSecPerKm, hot)
+	}
+
+	// En endurance, la dérive cardiaque due à la chaleur est en partie tolérée.
+	run := fakeRun(15, around(400, 0, 2, -2, 1, -1, 0, 2, -2, 1, -1), 140, 1.2, 190)
+	run.SessionType = SessionEndurance
+	sansChaleur := Score(run)
+	run.HeatPct = 6
+	avecChaleur := Score(run)
+	a, _ := componentOf(sansChaleur, "decoupling")
+	b, _ := componentOf(avecChaleur, "decoupling")
+	if b <= a {
+		t.Fatalf("dérive par la chaleur : %d sans correction, %d avec", a, b)
+	}
+}

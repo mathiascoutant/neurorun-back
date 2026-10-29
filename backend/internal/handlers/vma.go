@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -244,7 +245,12 @@ func (h *Handlers) scoreLiveRun(ctx context.Context, u *models.User, run *models
 	if !ok {
 		return nil
 	}
-	res := vma.Score(liveRunScoreInput(run, vmaKmh, h.hrReference(ctx, u)))
+	in := liveRunScoreInput(run, vmaKmh, h.hrReference(ctx, u))
+	cond := h.liveRunWeather(ctx, run)
+	if cond != nil {
+		in.HeatPct = cond.HeatPct
+	}
+	res := vma.Score(in)
 	if !res.Scorable {
 		return nil
 	}
@@ -252,6 +258,7 @@ func (h *Handlers) scoreLiveRun(ctx context.Context, u *models.User, run *models
 		Result:     res,
 		VmaTestID:  testID,
 		ComputedAt: time.Now().UTC(),
+		Weather:    cond,
 	}
 }
 
@@ -526,6 +533,10 @@ Kilomètres (écart à la zone, 0 = dans la zone) : %s
 		rules = "La note ne cherche pas la vitesse : elle vérifie que la séance a été courue comme elle devait l'être — cœur sous le plafond de la zone, kilomètres dans la zone d'allure, allure régulière, cœur qui ne dérive pas sur la fin. Courir plus vite que la zone fait baisser la note."
 	}
 
+	if heat := heatSentence(s); heat != "" {
+		detail += "\n" + heat + " Les objectifs d'allure ci-dessus en tiennent déjà compte : ne reproche pas au coureur d'avoir couru moins vite à cause de la chaleur."
+	}
+
 	prompt := fmt.Sprintf(`Tu es un coach course à pied. Explique une note de course à son auteur, en français, en le tutoyant.
 
 Type de séance : %s (%s).
@@ -579,6 +590,20 @@ Pas de généralités creuses, appuie-toi sur les chiffres fournis.`,
 
 // fallbackExplanation : explication chiffrée sans IA. Moins bien tournée, mais
 // jamais absente — et elle dit exactement la même chose que la note.
+// heatSentence : la correction de chaleur en une phrase, vide par temps frais.
+func heatSentence(s *models.RunScore) string {
+	if s.HeatPct <= 0 || s.Weather == nil {
+		return ""
+	}
+	return fmt.Sprintf("Il faisait %s °C et %.0f %% d'humidité : les allures visées ont été ralenties de %s %% pour te juger à effort égal.",
+		frNumber(s.Weather.TempC), s.Weather.HumidityPct, frNumber(s.HeatPct))
+}
+
+// frNumber : « 29 », « 5,6 ».
+func frNumber(x float64) string {
+	return strings.Replace(strconv.FormatFloat(math.Round(x*10)/10, 'f', -1, 64), ".", ",", 1)
+}
+
 func fallbackExplanation(s *models.RunScore) *models.RunScoreExplanation {
 	var exp *models.RunScoreExplanation
 	switch s.SessionType {
@@ -591,6 +616,9 @@ func fallbackExplanation(s *models.RunScore) *models.RunScoreExplanation {
 	}
 	if s.IntervalsUndetected {
 		exp.Why = append([]string{"Tes répétitions ne se détachent pas assez de la trace pour être isolées : la séance est jugée comme une sortie continue."}, exp.Why...)
+	}
+	if heat := heatSentence(s); heat != "" {
+		exp.Why = append([]string{heat}, exp.Why...)
 	}
 	exp.CreatedAt = time.Now().UTC()
 	return exp

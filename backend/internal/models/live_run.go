@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"runapp/internal/vma"
+	"runapp/internal/weather"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -66,6 +67,9 @@ type RunScore struct {
 	VmaTestID   string               `bson:"vma_test_id,omitempty" json:"vma_test_id,omitempty"`
 	ComputedAt  time.Time            `bson:"computed_at" json:"computed_at"`
 	Explanation *RunScoreExplanation `bson:"explanation,omitempty" json:"explanation,omitempty"`
+	// Weather : météo au milieu de la course, absente sans trace GPS ou si
+	// la source n'a pas répondu. Sa correction est dans Result.HeatPct.
+	Weather *weather.Conditions `bson:"weather,omitempty" json:"weather,omitempty"`
 }
 
 // Types de course choisis au départ, sur le téléphone ou à la montre. Ils
