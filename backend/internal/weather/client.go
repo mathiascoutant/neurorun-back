@@ -20,7 +20,7 @@ const (
 	forecastPastDays = 80
 	// Seize jours de prévision au plus.
 	forecastAheadDays = 15
-	hourlyFields      = "temperature_2m,relative_humidity_2m,dew_point_2m"
+	hourlyFields      = "temperature_2m,relative_humidity_2m,dew_point_2m,wind_speed_10m"
 
 	// Une journée passée ne change plus ; aujourd'hui, la prévision bouge.
 	cacheFresh = 30 * time.Minute
@@ -154,6 +154,7 @@ type openMeteoResponse struct {
 		Temp     []*float64 `json:"temperature_2m"`
 		Humidity []*float64 `json:"relative_humidity_2m"`
 		DewPoint []*float64 `json:"dew_point_2m"`
+		Wind     []*float64 `json:"wind_speed_10m"`
 	} `json:"hourly"`
 	Error  bool   `json:"error"`
 	Reason string `json:"reason"`
@@ -194,7 +195,11 @@ func (c *Client) fetch(ctx context.Context, base string, lat, lon float64, day t
 		if i < len(h.DewPoint) {
 			dp = h.DewPoint[i]
 		}
-		out = append(out, Hour{At: t.UTC(), Conditions: NewConditions(*h.Temp[i], *h.Humidity[i], dp)})
+		cond := NewConditions(*h.Temp[i], *h.Humidity[i], dp)
+		if i < len(h.Wind) && h.Wind[i] != nil {
+			cond = cond.WithWind(*h.Wind[i])
+		}
+		out = append(out, Hour{At: t.UTC(), Conditions: cond})
 	}
 	if len(out) == 0 {
 		return nil, ErrNoData

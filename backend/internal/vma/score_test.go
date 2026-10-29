@@ -569,3 +569,25 @@ func TestCanicule(t *testing.T) {
 		t.Fatalf("dérive par la chaleur : %d sans correction, %d avec", a, b)
 	}
 }
+
+// Le vent fort ralentit les cibles comme la chaleur, sans offrir de dérive
+// cardiaque : seule la chaleur fait dériver le cœur.
+func TestVentFort(t *testing.T) {
+	cool := TargetFor(15, 10)
+	windy := cool.PaceSecPerKm * 1.031
+	paces := make([]float64, 10)
+	for i := range paces {
+		paces[i] = windy
+	}
+	in := Input{Splits: splitsAt(paces...), DistanceKm: 10, MovingSec: totalOf(paces), VmaKmh: 15, SessionType: SessionRace}
+
+	calme := Score(in)
+	in.WeatherPct = 3.1
+	vent := Score(in)
+	if vent.Total <= calme.Total || vent.WeatherPct != 3.1 || vent.HeatPct != 0 {
+		t.Fatalf("même course : %d sans vent, %d corrigée du vent (%+v)", calme.Total, vent.Total, vent)
+	}
+	if math.Abs(vent.TargetPaceSecPerKm-windy) > 1 {
+		t.Fatalf("allure cible corrigée : %.0f, attendu %.0f", vent.TargetPaceSecPerKm, windy)
+	}
+}

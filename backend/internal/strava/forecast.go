@@ -161,6 +161,10 @@ type RaceLegForecast struct {
 	Ref *ForecastRef `json:"ref,omitempty"`
 	// Renseigné uniquement après POST /forecast/adjust : temps stats avant facteur ressenti / blessure.
 	BaselineTimeSec *float64 `json:"baseline_time_sec,omitempty"`
+	// Renseignés quand la météo du moment est connue : chrono par temps idéal,
+	// et ralentissement appliqué (en %) pour arriver à TimeSec.
+	IdealTimeSec *float64 `json:"ideal_time_sec,omitempty"`
+	WeatherPct   float64  `json:"weather_pct,omitempty"`
 }
 
 // ForecastRef décrit la sortie réelle sur laquelle repose une prévision.

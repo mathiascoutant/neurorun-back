@@ -10,9 +10,16 @@ type Conditions struct {
 	TempC       float64 `json:"temp_c" bson:"temp_c"`
 	HumidityPct float64 `json:"humidity_pct" bson:"humidity_pct"`
 	DewPointC   float64 `json:"dew_point_c" bson:"dew_point_c"`
+	// WindKmh : vent moyen à 10 m, en km/h (0 si la source ne le donne pas).
+	WindKmh float64 `json:"wind_kmh,omitempty" bson:"wind_kmh,omitempty"`
 	// HeatPct : ralentissement d'allure attendu à effort égal, en pour cent.
 	// Zéro par temps frais.
 	HeatPct float64 `json:"heat_pct" bson:"heat_pct"`
+	// ColdPct, WindPct : ralentissement dû au froid et au vent, en %.
+	ColdPct float64 `json:"cold_pct,omitempty" bson:"cold_pct,omitempty"`
+	WindPct float64 `json:"wind_pct,omitempty" bson:"wind_pct,omitempty"`
+	// SlowdownPct : ralentissement total (chaleur + froid + vent), plafonné.
+	SlowdownPct float64 `json:"slowdown_pct,omitempty" bson:"slowdown_pct,omitempty"`
 }
 
 // heatTable : ralentissement selon la somme température + point de rosée, en
@@ -71,18 +78,29 @@ func DewPoint(tempC, humidityPct float64) float64 {
 }
 
 // NewConditions : les conditions complètes à partir de la température et de
-// l'humidité, point de rosée calculé si absent.
+// l'humidité, point de rosée calculé si absent. Sans vent : voir WithWind.
 func NewConditions(tempC, humidityPct float64, dewPointC *float64) Conditions {
 	dp := DewPoint(tempC, humidityPct)
 	if dewPointC != nil {
 		dp = *dewPointC
 	}
-	return Conditions{
+	c := Conditions{
 		TempC:       round1(tempC),
 		HumidityPct: math.Round(humidityPct),
 		DewPointC:   round1(dp),
 		HeatPct:     HeatSlowdownPct(tempC, dp),
+		ColdPct:     ColdSlowdownPct(tempC),
 	}
+	c.SlowdownPct = c.total()
+	return c
+}
+
+// WithWind : les mêmes conditions, avec le vent mesuré.
+func (c Conditions) WithWind(windKmh float64) Conditions {
+	c.WindKmh = math.Round(math.Max(0, windKmh))
+	c.WindPct = WindSlowdownPct(windKmh)
+	c.SlowdownPct = c.total()
+	return c
 }
 
 func toF(c float64) float64 { return c*9/5 + 32 }

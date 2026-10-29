@@ -249,6 +249,7 @@ func (h *Handlers) scoreLiveRun(ctx context.Context, u *models.User, run *models
 	cond := h.liveRunWeather(ctx, run)
 	if cond != nil {
 		in.HeatPct = cond.HeatPct
+		in.WeatherPct = cond.SlowdownPct
 	}
 	res := vma.Score(in)
 	if !res.Scorable {
@@ -533,8 +534,8 @@ Kilomètres (écart à la zone, 0 = dans la zone) : %s
 		rules = "La note ne cherche pas la vitesse : elle vérifie que la séance a été courue comme elle devait l'être — cœur sous le plafond de la zone, kilomètres dans la zone d'allure, allure régulière, cœur qui ne dérive pas sur la fin. Courir plus vite que la zone fait baisser la note."
 	}
 
-	if heat := heatSentence(s); heat != "" {
-		detail += "\n" + heat + " Les objectifs d'allure ci-dessus en tiennent déjà compte : ne reproche pas au coureur d'avoir couru moins vite à cause de la chaleur."
+	if heat := weatherSentence(s); heat != "" {
+		detail += "\n" + heat + " Les objectifs d'allure ci-dessus en tiennent déjà compte : ne reproche pas au coureur d'avoir couru moins vite à cause de la météo."
 	}
 
 	prompt := fmt.Sprintf(`Tu es un coach course à pied. Explique une note de course à son auteur, en français, en le tutoyant.
@@ -590,13 +591,26 @@ Pas de généralités creuses, appuie-toi sur les chiffres fournis.`,
 
 // fallbackExplanation : explication chiffrée sans IA. Moins bien tournée, mais
 // jamais absente — et elle dit exactement la même chose que la note.
-// heatSentence : la correction de chaleur en une phrase, vide par temps frais.
-func heatSentence(s *models.RunScore) string {
-	if s.HeatPct <= 0 || s.Weather == nil {
+// weatherSentence : la correction météo en une phrase, vide quand la météo
+// n'a rien coûté. Seules les causes qui ont pesé sont nommées.
+func weatherSentence(s *models.RunScore) string {
+	pct := s.WeatherPct
+	if pct <= 0 {
+		pct = s.HeatPct
+	}
+	if pct <= 0 || s.Weather == nil {
 		return ""
 	}
-	return fmt.Sprintf("Il faisait %s °C et %.0f %% d'humidité : les allures visées ont été ralenties de %s %% pour te juger à effort égal.",
-		frNumber(s.Weather.TempC), s.Weather.HumidityPct, frNumber(s.HeatPct))
+	w := s.Weather
+	conds := fmt.Sprintf("%s °C", frNumber(w.TempC))
+	if w.HeatPct > 0 {
+		conds += fmt.Sprintf(" et %.0f %% d'humidité", w.HumidityPct)
+	}
+	if w.WindPct > 0 {
+		conds += fmt.Sprintf(", vent à %.0f km/h", w.WindKmh)
+	}
+	return fmt.Sprintf("Il faisait %s : les allures visées ont été ralenties de %s %% pour te juger à effort égal.",
+		conds, frNumber(pct))
 }
 
 // frNumber : « 29 », « 5,6 ».
@@ -617,7 +631,7 @@ func fallbackExplanation(s *models.RunScore) *models.RunScoreExplanation {
 	if s.IntervalsUndetected {
 		exp.Why = append([]string{"Tes répétitions ne se détachent pas assez de la trace pour être isolées : la séance est jugée comme une sortie continue."}, exp.Why...)
 	}
-	if heat := heatSentence(s); heat != "" {
+	if heat := weatherSentence(s); heat != "" {
 		exp.Why = append([]string{heat}, exp.Why...)
 	}
 	exp.CreatedAt = time.Now().UTC()

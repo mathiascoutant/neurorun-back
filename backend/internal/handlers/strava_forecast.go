@@ -6,16 +6,83 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"runapp/internal/models"
 	"runapp/internal/strava"
+	"runapp/internal/weather"
 )
 
 type forecastAdjustBody struct {
 	Energy  string `json:"energy"` // great | normal | tired
 	Injured bool   `json:"injured"`
+	// Position du coureur, facultative : les chronos tiennent alors compte de
+	// la météo qu'il fait là, maintenant.
+	Lat *float64 `json:"lat"`
+	Lon *float64 `json:"lon"`
+}
+
+// forecastWithWeather : la prévision, et la météo qui l'a ralentie.
+type forecastWithWeather struct {
+	strava.RaceForecastPayload
+	Weather *weather.Conditions `json:"weather,omitempty"`
+}
+
+// currentWeather : la météo de l'heure au lieu donné, nil si inconnue. Une
+// prévision ne doit jamais échouer faute de météo.
+func (h *Handlers) currentWeather(ctx context.Context, lat, lon *float64) *weather.Conditions {
+	if h.weather == nil || lat == nil || lon == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, weatherTimeout)
+	defer cancel()
+	cond, err := h.weather.At(ctx, *lat, *lon, time.Now().UTC())
+	if err != nil {
+		return nil
+	}
+	return cond
+}
+
+// queryCoord : coordonnée lue dans l'URL, nil si absente ou invalide.
+func queryCoord(r *http.Request, key string, limit float64) *float64 {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(v) || v < -limit || v > limit {
+		return nil
+	}
+	return &v
+}
+
+// applyForecastWeather ralentit chaque chrono de ce que la météo coûte sur
+// cette durée (voir weather.RaceSlowdownPct) ; le chrono par temps idéal reste
+// dans IdealTimeSec.
+func applyForecastWeather(base strava.RaceForecastPayload, c *weather.Conditions) strava.RaceForecastPayload {
+	if c == nil {
+		return base
+	}
+	out := base
+	out.Legs = make([]strava.RaceLegForecast, len(base.Legs))
+	for i, leg := range base.Legs {
+		if leg.TimeSec > 0 {
+			if pct := c.RaceSlowdownPct(leg.TimeSec); pct > 0 {
+				ideal := leg.TimeSec
+				f := 1 + pct/100
+				leg.IdealTimeSec = &ideal
+				leg.WeatherPct = pct
+				leg.TimeSec = math.Round(leg.TimeSec * f)
+				leg.TimeLowSec = math.Round(leg.TimeLowSec * f)
+				leg.TimeHighSec = math.Round(leg.TimeHighSec * f)
+				leg.PaceSecPerKm = math.Round(leg.PaceSecPerKm * f)
+			}
+		}
+		out.Legs[i] = leg
+	}
+	return out
 }
 
 type forecastFactorsJSON struct {
@@ -136,8 +203,9 @@ func (h *Handlers) StravaRaceForecast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runs := h.gatherForecastRuns(r.Context(), u)
-	payload := strava.BuildRaceForecast(runs)
-	writeJSON(w, http.StatusOK, payload)
+	cond := h.currentWeather(r.Context(), queryCoord(r, "lat", 90), queryCoord(r, "lon", 180))
+	payload := applyForecastWeather(strava.BuildRaceForecast(runs), cond)
+	writeJSON(w, http.StatusOK, forecastWithWeather{RaceForecastPayload: payload, Weather: cond})
 }
 
 func (h *Handlers) StravaRaceForecastAdjust(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +224,9 @@ func (h *Handlers) StravaRaceForecastAdjust(w http.ResponseWriter, r *http.Reque
 	}
 
 	runs := h.gatherForecastRuns(r.Context(), u)
-	base := strava.BuildRaceForecast(runs)
+	cond := h.currentWeather(r.Context(), b.Lat, b.Lon)
+	// La météo d'abord : le ressenti et la blessure s'appliquent au chrono du jour.
+	base := applyForecastWeather(strava.BuildRaceForecast(runs), cond)
 
 	aiKey := strings.TrimSpace(h.cfg.OpenAIAPIKey) != ""
 	var fac forecastFactorsJSON
@@ -211,6 +281,7 @@ Reste réaliste : facteurs entre 0.9 et 1.18. rationale_fr : 1 à 2 phrases en f
 		"rationale_fr": fac.Rationale,
 		"ai_used":      aiUsed,
 		"factors":      fac,
+		"weather":      cond,
 	})
 }
 

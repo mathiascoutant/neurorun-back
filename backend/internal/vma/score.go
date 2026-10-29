@@ -13,7 +13,9 @@ import (
 //   - 3 : le type de séance est choisi au départ (libre, endurance,
 //     fractionné), le fractionné est noté sur ses répétitions, et le cardio se
 //     juge sur la FC atteinte au test de VMA plutôt que sur l'âge.
-const ScoreVersion = 3
+//   - 4 : la météo de la course (chaleur, froid, vent) ralentit les allures
+//     visées ; les courses déjà notées sont rejugées avec la leur.
+const ScoreVersion = 4
 
 // Types de séance. La note ne juge pas une sortie en endurance fondamentale
 // comme un 10 km à fond : on vérifie qu'elle a été courue comme une endurance.
@@ -179,8 +181,12 @@ type Input struct {
 	SessionType string
 
 	// HeatPct : ralentissement dû à la chaleur, en % (0 = temps frais ou météo
-	// inconnue). La course est alors jugée sur la VMA que la chaleur laisse.
+	// inconnue). Il sert aussi à tolérer la dérive cardiaque.
 	HeatPct float64
+	// WeatherPct : ralentissement total dû à la météo (chaleur, froid, vent),
+	// en %. La course est jugée sur la VMA que la météo laisse. Zéro : on s'en
+	// tient à HeatPct.
+	WeatherPct float64
 }
 
 // KmScore : détail d'un kilomètre dans la note.
@@ -267,6 +273,9 @@ type Result struct {
 	// HeatPct : correction de chaleur appliquée, en %. Les allures cibles et
 	// les zones affichées en tiennent déjà compte ; VmaKmh reste la VMA du test.
 	HeatPct float64 `json:"heat_pct,omitempty"`
+	// WeatherPct : correction météo totale appliquée aux allures (chaleur,
+	// froid, vent), en %.
+	WeatherPct float64 `json:"weather_pct,omitempty"`
 }
 
 // curvePoints : 100 · exp(-(x / falloff) ^ power), 100 pour un écart nul.
@@ -352,11 +361,19 @@ func Score(in Input) Result {
 	}
 
 	// Par 29 °C et 70 % d'humidité, tenir 5:05 coûte ce que coûterait 5:22 au
-	// frais : toutes les cibles se lisent sur la VMA disponible ce jour-là.
+	// frais ; un vent fort ou un froid vif ralentissent aussi : toutes les
+	// cibles se lisent sur la VMA disponible ce jour-là.
 	vmaKmh := in.VmaKmh
+	slow := in.WeatherPct
+	if slow <= 0 {
+		slow = in.HeatPct
+	}
 	if in.HeatPct > 0 {
 		res.HeatPct = in.HeatPct
-		vmaKmh = in.VmaKmh / (1 + in.HeatPct/100)
+	}
+	if slow > 0 {
+		res.WeatherPct = slow
+		vmaKmh = in.VmaKmh / (1 + slow/100)
 	}
 
 	target := TargetFor(vmaKmh, in.DistanceKm)
