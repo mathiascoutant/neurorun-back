@@ -338,7 +338,7 @@ func (h *Handlers) BoostFeed(w http.ResponseWriter, r *http.Request) {
 				mine = b.Kind
 			}
 		}
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"id":                  lr.ID.Hex(),
 			"user":                friendPublic(owner),
 			"created_at":          lr.CreatedAt.UTC().Format(time.RFC3339),
@@ -350,7 +350,13 @@ func (h *Handlers) BoostFeed(w http.ResponseWriter, r *http.Request) {
 			"elevation_gain_m":    elevationGain(lr),
 			"boosts":              counts,
 			"my_boost":            mine,
-		})
+		}
+		// Le détail d'une course d'ami montre déjà sa trace entière : la silhouette
+		// sur la carte du fil n'en dévoile pas plus.
+		if route := liveRunRoutePolyline(lr.TrackPoints); route != "" {
+			item["route_polyline"] = route
+		}
+		items = append(items, item)
 	}
 
 	res := map[string]any{"items": items}

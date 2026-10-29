@@ -312,7 +312,15 @@ func (d *DB) ListLiveRunsByUsersBefore(ctx context.Context, userIDs []primitive.
 	opts := options.Find().
 		SetSort(bson.D{{Key: "created_at", Value: -1}}).
 		SetLimit(int64(limit)).
-		SetProjection(bson.M{"track_points": 0})
+		// Des points, le fil ne garde que la position : de quoi dessiner la silhouette
+		// du tracé sur la carte, sans la fréquence cardiaque ni l'altitude de chaque point.
+		SetProjection(bson.M{
+			"track_points.t_ms":        0,
+			"track_points.alt_m":       0,
+			"track_points.heading_deg": 0,
+			"track_points.speed_mps":   0,
+			"track_points.hr_bpm":      0,
+		})
 	cur, err := d.liveRuns.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
