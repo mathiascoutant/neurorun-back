@@ -404,7 +404,9 @@ func pendingShoeSince(list []shoeView, now time.Time) time.Time {
 
 // PendingShoeRun GET /api/shoes/pending-run — la dernière course terminée dont
 // on ne sait pas encore avec quelle paire elle a été courue. L'app la montre
-// en récapitulatif dès que le coureur revient, avec ses paires actives.
+// en récapitulatif dès que le coureur revient, avec ses paires actives. Les
+// sorties Strava y entrent comme les courses NeuroRun ; la copie Strava d'une
+// course NeuroRun, elle, n'est jamais demandée.
 //
 // Avec une seule paire active, il n'y a rien à demander : les courses en
 // attente lui sont rattachées et la réponse est vide.
@@ -422,6 +424,9 @@ func (h *Handlers) PendingShoeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since := pendingShoeSince(views, time.Now().UTC())
+	syncCtx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	h.syncStravaRunsForShoes(syncCtx, u, since)
+	cancel()
 
 	if len(active) == 1 {
 		only := active[0].ID
@@ -434,20 +439,44 @@ func (h *Handlers) PendingShoeRun(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+		for i := 0; i < 20; i++ {
+			run, err := h.db.PendingStravaShoeRun(r.Context(), u.ID, since)
+			if err != nil {
+				break
+			}
+			if err := h.db.SetStravaRunShoe(r.Context(), u.ID, run.ID, &only); err != nil {
+				break
+			}
+		}
 		writeJSON(w, http.StatusOK, empty)
 		return
 	}
 
-	run, err := h.db.PendingShoeRun(r.Context(), u.ID, since)
-	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusOK, empty)
-		return
-	}
-	if err != nil {
+	liveRun, lerr := h.db.PendingShoeRun(r.Context(), u.ID, since)
+	if lerr != nil && !errors.Is(lerr, store.ErrNotFound) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lecture impossible"})
 		return
 	}
-	remaining, _ := h.db.CountPendingShoeRuns(r.Context(), u.ID, since)
+	stravaRun, serr := h.db.PendingStravaShoeRun(r.Context(), u.ID, since)
+	if serr != nil && !errors.Is(serr, store.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lecture impossible"})
+		return
+	}
+	// La plus récente des deux d'abord : c'est celle dont on se souvient.
+	var run *models.LiveRun
+	source := "neurorun"
+	switch {
+	case liveRun != nil && (stravaRun == nil || !liveRunStart(liveRun).Before(stravaRun.StartedAt)):
+		run = liveRun
+	case stravaRun != nil:
+		run = stravaRunAsLive(stravaRun)
+		source = "strava"
+	default:
+		writeJSON(w, http.StatusOK, empty)
+		return
+	}
+	nLive, _ := h.db.CountPendingShoeRuns(r.Context(), u.ID, since)
+	nStrava, _ := h.db.CountPendingStravaShoeRuns(r.Context(), u.ID, since)
 
 	startedAt := run.CreatedAt.UTC()
 	if run.GpsStartTsMs > 0 {
@@ -455,6 +484,7 @@ func (h *Handlers) PendingShoeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	recap := map[string]any{
 		"id":                  run.ID.Hex(),
+		"source":              source,
 		"created_at":          run.CreatedAt.UTC().Format(time.RFC3339),
 		"started_at":          startedAt.Format(time.RFC3339),
 		"distance_m":          run.DistanceM,
@@ -474,7 +504,7 @@ func (h *Handlers) PendingShoeRun(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"run":       recap,
 		"shoes":     active,
-		"remaining": remaining,
+		"remaining": nLive + nStrava,
 	}
 	// Paire à cocher d'avance : il ne reste qu'à valider d'un geste.
 	if s := h.guessRunShoe(r.Context(), u.ID, run, active); s != nil {
@@ -489,7 +519,8 @@ type liveRunShoeBody struct {
 }
 
 // SetLiveRunShoe PUT /api/live-runs/{id}/shoe {shoe_id} — paire portée pour
-// cette course ; vide pour n'en rattacher aucune.
+// cette course (NeuroRun ou sortie Strava de la question) ; vide pour n'en
+// rattacher aucune.
 func (h *Handlers) SetLiveRunShoe(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
 	runID, err := primitive.ObjectIDFromHex(chi.URLParam(r, "id"))
@@ -515,7 +546,13 @@ func (h *Handlers) SetLiveRunShoe(w http.ResponseWriter, r *http.Request) {
 		}
 		shoeID = &id
 	}
-	if err := h.db.SetLiveRunShoe(r.Context(), u.ID, runID, shoeID); err != nil {
+	err = h.db.SetLiveRunShoe(r.Context(), u.ID, runID, shoeID)
+	// Même route pour une sortie Strava de la question : l'app et le site n'ont
+	// pas à savoir d'où vient la course pour y répondre.
+	if errors.Is(err, store.ErrNotFound) {
+		err = h.db.SetStravaRunShoe(r.Context(), u.ID, runID, shoeID)
+	}
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "course introuvable"})
 			return

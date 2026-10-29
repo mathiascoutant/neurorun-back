@@ -86,14 +86,16 @@ func (d *DB) DeleteShoeByUser(ctx context.Context, userID, shoeID primitive.Obje
 	if res.DeletedCount == 0 {
 		return ErrNotFound
 	}
-	_, err = d.liveRuns.UpdateMany(ctx,
-		bson.M{"user_id": userID, "shoe_id": shoeID},
-		bson.M{"$unset": bson.M{"shoe_id": ""}, "$set": bson.M{"shoe_skipped": true}},
-	)
+	detach := bson.M{"$unset": bson.M{"shoe_id": ""}, "$set": bson.M{"shoe_skipped": true}}
+	if _, err = d.liveRuns.UpdateMany(ctx, bson.M{"user_id": userID, "shoe_id": shoeID}, detach); err != nil {
+		return err
+	}
+	_, err = d.stravaRuns.UpdateMany(ctx, bson.M{"user_id": userID, "shoe_id": shoeID}, detach)
 	return err
 }
 
-// ShoeRunTotals : distance et nombre de courses rattachées à chaque paire.
+// ShoeRunTotals : distance et nombre de courses rattachées à chaque paire,
+// courses NeuroRun et sorties Strava confondues.
 func (d *DB) ShoeRunTotals(ctx context.Context, userID primitive.ObjectID) (map[primitive.ObjectID]models.ShoeRunTotal, error) {
 	cur, err := d.liveRuns.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"user_id": userID, "shoe_id": bson.M{"$type": "objectId"}}}},
@@ -115,7 +117,13 @@ func (d *DB) ShoeRunTotals(ctx context.Context, userID primitive.ObjectID) (map[
 		}
 		out[t.ShoeID] = t
 	}
-	return out, cur.Err()
+	if err := cur.Err(); err != nil {
+		return nil, err
+	}
+	if err := d.stravaShoeTotals(ctx, userID, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // SetLiveRunShoe rattache une course à une paire (shoeID non nil) ou note

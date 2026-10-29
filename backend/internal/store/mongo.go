@@ -59,6 +59,8 @@ type DB struct {
 	// coachSuggestions : propositions du coach (séance à décaler par mauvais
 	// temps), en attente de la réponse du coureur.
 	coachSuggestions *mongo.Collection
+	// stravaRuns : sorties Strava retenues pour le suivi des chaussures.
+	stravaRuns *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -121,6 +123,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	liveSessions := database.Collection("live_sessions")
 	liveBoosts := database.Collection("live_boosts")
 	coachSuggestions := database.Collection("coach_suggestions")
+	stravaRuns := database.Collection("strava_runs")
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -242,6 +245,14 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "goal_id", Value: 1}, {Key: "day", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
+	// Une ligne par sortie Strava et par coureur : la relecture ne duplique rien.
+	_, _ = stravaRuns.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "strava_id", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	_, _ = stravaRuns.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "started_at", Value: -1}},
+	})
 	return &DB{
 		client:        client,
 		database:      database,
@@ -266,6 +277,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		liveSessions:       liveSessions,
 		liveBoosts:         liveBoosts,
 		coachSuggestions:   coachSuggestions,
+		stravaRuns:         stravaRuns,
 	}, nil
 }
 
