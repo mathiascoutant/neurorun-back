@@ -132,6 +132,7 @@ func (h *Handlers) RenameLiveRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "enregistrement impossible"})
 		return
 	}
+	h.renameOnStrava(u, runID)
 	writeJSON(w, http.StatusOK, map[string]string{"name": name})
 }
 

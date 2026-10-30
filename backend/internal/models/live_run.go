@@ -119,6 +119,9 @@ type LiveRun struct {
 	// ShoeSkipped : le coureur a répondu « aucune de ces paires » ; la
 	// question ne revient plus pour cette course.
 	ShoeSkipped bool `bson:"shoe_skipped,omitempty" json:"shoe_skipped,omitempty"`
+	// Strava : envoi de la course sur le compte Strava lié. Absent tant que
+	// rien n'a été tenté (compte non lié, droit d'écriture non accordé).
+	Strava *LiveRunStrava `bson:"strava,omitempty" json:"strava,omitempty"`
 	// GoalSession : séance d'objectif lancée depuis l'app. La course compte pour
 	// elle même courue la veille ou le lendemain de son jour.
 	GoalSession *LiveRunGoalSession `bson:"goal_session,omitempty" json:"goal_session,omitempty"`
@@ -144,6 +147,21 @@ type LiveRun struct {
 	ScreenH           int    `bson:"screen_h,omitempty" json:"screen_h,omitempty"`
 	OnlineAtEnd       bool   `bson:"online_at_end,omitempty" json:"online_at_end,omitempty"`
 	AutoPauseDetected bool   `bson:"auto_pause_detected,omitempty" json:"auto_pause_detected,omitempty"`
+}
+
+// États de l'envoi d'une course sur Strava.
+const (
+	StravaUploadPending = "pending" // envoyée, Strava la traite
+	StravaUploadDone    = "done"    // activité créée (ou déjà présente sur Strava)
+	StravaUploadFailed  = "failed"  // refusée ou injoignable : l'app propose de réessayer
+)
+
+// LiveRunStrava : où en est la copie Strava d'une course NeuroRun.
+type LiveRunStrava struct {
+	Status     string    `bson:"status" json:"status"`
+	ActivityID int64     `bson:"activity_id,omitempty" json:"activity_id,omitempty"`
+	Error      string    `bson:"error,omitempty" json:"error,omitempty"`
+	UpdatedAt  time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // LiveRunGoalSession : séance du plan (semaine, numéro) d'un objectif.

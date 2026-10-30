@@ -10,6 +10,8 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"runapp/internal/models"
@@ -18,8 +20,17 @@ import (
 const (
 	authorizeURL = "https://www.strava.com/oauth/authorize"
 	tokenURL     = "https://www.strava.com/oauth/token"
-	apiBase      = "https://www.strava.com/api/v3"
 )
+
+var apiBase = "https://www.strava.com/api/v3"
+
+// Réservé aux essais de bout en bout : un faux Strava local, pour voir partir une
+// course sans la publier sur un vrai compte.
+func init() {
+	if u := strings.TrimSpace(os.Getenv("STRAVA_API_URL")); u != "" {
+		apiBase = strings.TrimRight(u, "/")
+	}
+}
 
 // ErrUnauthorized : Strava refuse ces jetons — accès révoqué depuis le compte Strava,
 // application désautorisée ou jeton de rafraîchissement invalidé. À la différence d'une

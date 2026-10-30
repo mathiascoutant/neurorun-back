@@ -61,8 +61,13 @@ func appLiveRunToRunActivity(lr *models.LiveRun) strava.RunActivity {
 	if wall < mov {
 		wall = mov
 	}
+	var uploadedAs int64
+	if lr.Strava != nil && lr.Strava.Status == models.StravaUploadDone {
+		uploadedAs = lr.Strava.ActivityID
+	}
 	return strava.RunActivity{
 		ID:         0,
+		UploadedAs: uploadedAs,
 		Name:       "Course NeuroRun",
 		Type:       "Run",
 		StartAt:    startAt,
@@ -127,6 +132,9 @@ next:
 }
 
 func nearSameRun(a, b strava.RunActivity) bool {
+	if (a.UploadedAs != 0 && a.UploadedAs == b.ID) || (b.UploadedAs != 0 && b.UploadedAs == a.ID) {
+		return true
+	}
 	sec := math.Abs(a.StartAt.Sub(b.StartAt).Seconds())
 	if sec > 180 {
 		return false

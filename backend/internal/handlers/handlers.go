@@ -456,6 +456,7 @@ func userPublic(u *models.User, capabilities map[string]bool) map[string]any {
 		"birth_date":    u.BirthDate,
 		"gender":        u.Gender,
 		"strava_linked": u.HasStrava(),
+		"strava_upload": u.HasStrava() && u.Strava.CanUpload(),
 		"created_at":    u.CreatedAt.Format(time.RFC3339),
 		"role":          u.EffectiveRole(),
 		"plan":          u.EffectivePlan(),
@@ -768,7 +769,9 @@ func (h *Handlers) StravaAuthorizeURL(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state"})
 		return
 	}
-	scope := "activity:read_all,profile:read_all"
+	// activity:write : publier les courses NeuroRun sur Strava. Le coureur peut
+	// décocher la case sur la page Strava ; le callback lit ce qu'il a accordé.
+	scope := "activity:read_all,profile:read_all,activity:write"
 	url := h.strava.AuthorizeURL(h.cfg.StravaRedirectURI, state, scope)
 	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
@@ -817,6 +820,7 @@ func (h *Handlers) StravaCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, h.cfg.FrontendURL+"/link-strava?error=strava", http.StatusFound)
 		return
 	}
+	tokens.Scope = r.URL.Query().Get("scope")
 
 	if err := h.db.UpdateStravaTokens(r.Context(), oid, tokens); err != nil {
 		http.Redirect(w, r, h.cfg.FrontendURL+"/link-strava?error=db", http.StatusFound)
@@ -836,6 +840,8 @@ func (h *Handlers) ensureStravaAccess(ctx context.Context, u *models.User) (stri
 		if err != nil {
 			return "", err
 		}
+		// Strava ne redit pas les droits au rafraîchissement : ce sont ceux de la liaison.
+		refreshed.Scope = u.Strava.Scope
 		if err := h.db.UpdateStravaTokens(ctx, u.ID, refreshed); err != nil {
 			return "", err
 		}
@@ -1699,6 +1705,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/live-runs/{id}/score", h.GetLiveRunScore)
 		pr.Patch("/live-runs/{id}", h.RenameLiveRun)
 		pr.Put("/live-runs/{id}/shoe", h.SetLiveRunShoe)
+		pr.Post("/live-runs/{id}/strava", h.PushLiveRunToStrava)
 		// Chaussures : paires, usure théorique, paire portée à chaque course.
 		pr.Get("/shoes", h.ListShoes)
 		pr.Get("/shoes/catalog", h.ShoeCatalog)

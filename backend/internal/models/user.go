@@ -11,6 +11,23 @@ type StravaTokens struct {
 	AccessToken  string    `bson:"access_token" json:"-"`
 	RefreshToken string    `bson:"refresh_token" json:"-"`
 	ExpiresAt    time.Time `bson:"expires_at" json:"-"`
+	// Scope : droits accordés par le coureur sur la page d'autorisation Strava
+	// (« read,activity:write,… »). Vide sur les liaisons faites avant l'envoi des
+	// courses : elles ne savaient que lire.
+	Scope string `bson:"scope,omitempty" json:"-"`
+}
+
+// CanUpload : le coureur a laissé cochée la case « publier tes activités ».
+func (t *StravaTokens) CanUpload() bool {
+	if t == nil {
+		return false
+	}
+	for _, s := range strings.Split(t.Scope, ",") {
+		if strings.TrimSpace(s) == "activity:write" {
+			return true
+		}
+	}
+	return false
 }
 
 const (

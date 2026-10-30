@@ -33,6 +33,10 @@ type RunActivity struct {
 	// SummaryPolyline : silhouette du tracé déjà simplifiée par Strava (format
 	// polyline de Google), vide sans GPS.
 	SummaryPolyline string
+	// UploadedAs : sur une course NeuroRun publiée sur Strava, l'activité créée. Sa
+	// copie se reconnaît alors à coup sûr, même si son départ diffère de quelques
+	// minutes (le fichier part du premier point GPS, pas du bouton Démarrer).
+	UploadedAs int64
 }
 
 func runActivityTypes(t string) bool {

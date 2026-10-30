@@ -206,6 +206,7 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 	// Uniquement ici, sur une vraie création : un réessai de la montre (duplicate)
 	// ressort plus haut et ne renotifie pas les amis.
 	h.notifyFriendsOfRun(u, &run)
+	h.queueStravaUpload(u, &run)
 	// La course est arrivée : son direct s'arrête, même si l'appareil n'a pas pu
 	// le dire lui-même (réseau coupé à l'arrivée, app tuée).
 	if err := h.db.EndOpenLiveSessions(r.Context(), u.ID, goalcalendar.LiveRunStart(run).Add(time.Minute)); err != nil {
@@ -580,6 +581,9 @@ func liveRunToJSON(lr *models.LiveRun) map[string]any {
 	}
 	if lr.Name != "" {
 		m["name"] = lr.Name
+	}
+	if lr.Strava != nil {
+		m["strava"] = lr.Strava
 	}
 	m["session_type"] = models.NormalizeRunType(lr.SessionType)
 	// Fractionné : l'écran de détail montre les répétitions et les
