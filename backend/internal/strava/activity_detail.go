@@ -44,6 +44,19 @@ type DetailedActivity struct {
 		ElapsedTime int     `json:"elapsed_time"`
 		Split       int     `json:"split"`
 	} `json:"splits_metric"`
+	// BestEfforts : meilleure portion de la sortie sur chaque distance de
+	// référence (« 5k », « 10k », « Half-Marathon », « Marathon »…), calculée
+	// par Strava sur le GPS. Seul le propriétaire de l'activité les reçoit.
+	BestEfforts []BestEffort `json:"best_efforts"`
+}
+
+// BestEffort : une portion chronométrée par Strava à l'intérieur d'une sortie.
+type BestEffort struct {
+	Name        string  `json:"name"`
+	ElapsedTime int     `json:"elapsed_time"`
+	MovingTime  int     `json:"moving_time"`
+	Distance    float64 `json:"distance"`
+	StartDate   string  `json:"start_date"`
 }
 
 // ActivityStreams agrège les séries Strava (index alignés).

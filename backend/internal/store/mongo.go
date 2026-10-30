@@ -61,6 +61,8 @@ type DB struct {
 	coachSuggestions *mongo.Collection
 	// stravaRuns : sorties Strava retenues pour le suivi des chaussures.
 	stravaRuns *mongo.Collection
+	// stravaBestEfforts : portions chronométrées des sorties Strava (records).
+	stravaBestEfforts *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -124,6 +126,11 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	liveBoosts := database.Collection("live_boosts")
 	coachSuggestions := database.Collection("coach_suggestions")
 	stravaRuns := database.Collection("strava_runs")
+	stravaBestEfforts := database.Collection("strava_best_efforts")
+	_, _ = stravaBestEfforts.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "strava_id", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
 	_, _ = users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -278,6 +285,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		liveBoosts:         liveBoosts,
 		coachSuggestions:   coachSuggestions,
 		stravaRuns:         stravaRuns,
+		stravaBestEfforts:  stravaBestEfforts,
 	}, nil
 }
 

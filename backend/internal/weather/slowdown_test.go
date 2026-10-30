@@ -5,7 +5,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -63,7 +62,7 @@ func TestRalentissementSelonLaDuree(t *testing.T) {
 
 func TestLectureDuVent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Query().Get("hourly"), hourlyFields) {
+		if r.URL.Query().Get("hourly") != hourlyFields {
 			t.Errorf("champs demandés : %s", r.URL.Query().Get("hourly"))
 		}
 		_, _ = w.Write([]byte(`{"hourly":{"time":["2026-11-02T08:00"],

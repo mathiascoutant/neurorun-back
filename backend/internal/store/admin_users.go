@@ -186,6 +186,9 @@ func (d *DB) DeleteUserCascade(ctx context.Context, id primitive.ObjectID) error
 	if _, err := d.pushTokens.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
 		return err
 	}
+	if _, err := d.stravaBestEfforts.DeleteMany(ctx, bson.M{"user_id": id}); err != nil {
+		return err
+	}
 	if _, err := d.friendships.DeleteMany(ctx, bson.M{
 		"$or": []bson.M{{"requester_id": id}, {"addressee_id": id}},
 	}); err != nil {

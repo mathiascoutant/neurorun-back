@@ -22,11 +22,9 @@ const (
 	forecastPastDays = 80
 	// Seize jours de prévision au plus.
 	forecastAheadDays = 15
-	hourlyFields      = "temperature_2m,relative_humidity_2m,dew_point_2m,wind_speed_10m"
-	// L'état du ciel ne sert qu'à l'affichage : demandé à la prévision
-	// seulement, pour ne pas risquer un refus de l'archive sur des courses
-	// anciennes.
-	skyFields = "weather_code,is_day"
+	// weather_code et is_day ne servent qu'à l'affichage (pluie, nuit claire) ;
+	// la prévision comme l'archive les donnent.
+	hourlyFields = "temperature_2m,relative_humidity_2m,dew_point_2m,wind_speed_10m,weather_code,is_day"
 
 	// Une journée passée ne change plus ; aujourd'hui, la prévision bouge.
 	cacheFresh = 30 * time.Minute
@@ -180,11 +178,7 @@ func (c *Client) fetch(ctx context.Context, base string, lat, lon float64, day t
 	q := url.Values{}
 	q.Set("latitude", fmt.Sprintf("%.2f", lat))
 	q.Set("longitude", fmt.Sprintf("%.2f", lon))
-	fields := hourlyFields
-	if base == c.forecastURL {
-		fields += "," + skyFields
-	}
-	q.Set("hourly", fields)
+	q.Set("hourly", hourlyFields)
 	q.Set("timezone", "GMT")
 	q.Set("start_date", day.Format("2006-01-02"))
 	q.Set("end_date", day.Format("2006-01-02"))

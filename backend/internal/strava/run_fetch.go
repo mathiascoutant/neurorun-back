@@ -37,6 +37,8 @@ type RunActivity struct {
 	// copie se reconnaît alors à coup sûr, même si son départ diffère de quelques
 	// minutes (le fichier part du premier point GPS, pas du bouton Démarrer).
 	UploadedAs int64
+	// StartLat / StartLng : point de départ (start_latlng), absent sans GPS.
+	StartLat, StartLng *float64
 }
 
 func runActivityTypes(t string) bool {
@@ -202,6 +204,13 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 	if mp, ok := m["map"].(map[string]any); ok {
 		polyline, _ = mp["summary_polyline"].(string)
 	}
+	var startLat, startLng *float64
+	if ll, ok := m["start_latlng"].([]any); ok && len(ll) == 2 {
+		lat, lng := jsonFloat(ll[0]), jsonFloat(ll[1])
+		if lat != 0 || lng != 0 {
+			startLat, startLng = &lat, &lng
+		}
+	}
 	return RunActivity{
 		ID:          id,
 		Name:        name,
@@ -218,5 +227,7 @@ func mapToRunActivity(m map[string]any) (RunActivity, bool) {
 		Trainer:     trainer || typ == "VirtualRun",
 
 		SummaryPolyline: polyline,
+		StartLat:        startLat,
+		StartLng:        startLng,
 	}, true
 }

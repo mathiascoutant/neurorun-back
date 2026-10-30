@@ -78,15 +78,15 @@ func TestLectureOpenMeteo(t *testing.T) {
 	}
 }
 
-// L'archive (courses de plus de 80 jours) n'est interrogée que sur ce qui
-// pèse sur l'allure : l'état du ciel ne vaut pas le risque d'un refus.
-func TestArchiveSansEtatDuCiel(t *testing.T) {
+// L'archive (courses de plus de 80 jours) donne aussi l'état du ciel : un
+// record vieux de deux ans garde sa pluie ou son soleil.
+func TestArchiveAvecEtatDuCiel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("hourly"); got != hourlyFields {
 			t.Errorf("archive : champs demandés %s, attendu %s", got, hourlyFields)
 		}
 		_, _ = w.Write([]byte(`{"hourly":{"time":["2025-01-10T08:00"],
-			"temperature_2m":[4],"relative_humidity_2m":[80],"dew_point_2m":[1]}}`))
+			"temperature_2m":[4],"relative_humidity_2m":[80],"dew_point_2m":[1],"weather_code":[63],"is_day":[0]}}`))
 	}))
 	defer srv.Close()
 	c := New()
@@ -96,7 +96,7 @@ func TestArchiveSansEtatDuCiel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Code != nil || got.IsDay != nil {
-		t.Fatalf("archive : état du ciel %v / %v, attendu absent", got.Code, got.IsDay)
+	if got.Code == nil || *got.Code != 63 || got.IsDay == nil || *got.IsDay {
+		t.Fatalf("archive : état du ciel %v / %v, attendu pluie (63) de nuit", got.Code, got.IsDay)
 	}
 }

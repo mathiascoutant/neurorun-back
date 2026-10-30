@@ -1720,6 +1720,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		// Test de VMA (6 min) : référence de toutes les notes. Repassable à volonté.
 		pr.Post("/vma-tests", h.CreateVmaTest)
 		pr.Get("/vma", h.GetVma)
+		pr.Get("/records", h.Records)
 		pr.Delete("/vma-tests/{id}", h.DeleteVmaTest)
 		pr.Get("/run-history/feed", h.RunHistoryFeed)
 		pr.Get("/wrapped", h.Wrapped)
