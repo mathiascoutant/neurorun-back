@@ -20,6 +20,12 @@ type Conditions struct {
 	WindPct float64 `json:"wind_pct,omitempty" bson:"wind_pct,omitempty"`
 	// SlowdownPct : ralentissement total (chaleur + froid + vent), plafonné.
 	SlowdownPct float64 `json:"slowdown_pct,omitempty" bson:"slowdown_pct,omitempty"`
+	// Code : état du ciel, code météo WMO (0 dégagé, 61 pluie, 95 orage…).
+	// Ne ralentit rien, il se lit seulement. Absent quand la source ne le
+	// donne pas : 0 voulant dire « dégagé », d'où le pointeur.
+	Code *int `json:"weather_code,omitempty" bson:"weather_code,omitempty"`
+	// IsDay : faux la nuit, pour dire « nuit claire » plutôt que « ensoleillé ».
+	IsDay *bool `json:"is_day,omitempty" bson:"is_day,omitempty"`
 }
 
 // heatTable : ralentissement selon la somme température + point de rosée, en

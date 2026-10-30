@@ -23,6 +23,10 @@ const (
 	// Seize jours de prévision au plus.
 	forecastAheadDays = 15
 	hourlyFields      = "temperature_2m,relative_humidity_2m,dew_point_2m,wind_speed_10m"
+	// L'état du ciel ne sert qu'à l'affichage : demandé à la prévision
+	// seulement, pour ne pas risquer un refus de l'archive sur des courses
+	// anciennes.
+	skyFields = "weather_code,is_day"
 
 	// Une journée passée ne change plus ; aujourd'hui, la prévision bouge.
 	cacheFresh = 30 * time.Minute
@@ -165,6 +169,8 @@ type openMeteoResponse struct {
 		Humidity []*float64 `json:"relative_humidity_2m"`
 		DewPoint []*float64 `json:"dew_point_2m"`
 		Wind     []*float64 `json:"wind_speed_10m"`
+		Code     []*float64 `json:"weather_code"`
+		IsDay    []*float64 `json:"is_day"`
 	} `json:"hourly"`
 	Error  bool   `json:"error"`
 	Reason string `json:"reason"`
@@ -174,7 +180,11 @@ func (c *Client) fetch(ctx context.Context, base string, lat, lon float64, day t
 	q := url.Values{}
 	q.Set("latitude", fmt.Sprintf("%.2f", lat))
 	q.Set("longitude", fmt.Sprintf("%.2f", lon))
-	q.Set("hourly", hourlyFields)
+	fields := hourlyFields
+	if base == c.forecastURL {
+		fields += "," + skyFields
+	}
+	q.Set("hourly", fields)
 	q.Set("timezone", "GMT")
 	q.Set("start_date", day.Format("2006-01-02"))
 	q.Set("end_date", day.Format("2006-01-02"))
@@ -208,6 +218,14 @@ func (c *Client) fetch(ctx context.Context, base string, lat, lon float64, day t
 		cond := NewConditions(*h.Temp[i], *h.Humidity[i], dp)
 		if i < len(h.Wind) && h.Wind[i] != nil {
 			cond = cond.WithWind(*h.Wind[i])
+		}
+		if i < len(h.Code) && h.Code[i] != nil {
+			code := int(*h.Code[i])
+			cond.Code = &code
+		}
+		if i < len(h.IsDay) && h.IsDay[i] != nil {
+			day := *h.IsDay[i] != 0
+			cond.IsDay = &day
 		}
 		out = append(out, Hour{At: t.UTC(), Conditions: cond})
 	}

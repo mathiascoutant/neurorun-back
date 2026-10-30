@@ -50,7 +50,8 @@ func TestLectureOpenMeteo(t *testing.T) {
 			t.Errorf("coordonnée non arrondie : %s", r.URL.RawQuery)
 		}
 		_, _ = w.Write([]byte(`{"hourly":{"time":["2026-07-01T13:00","2026-07-01T14:00","2026-07-01T15:00"],
-			"temperature_2m":[27,29,null],"relative_humidity_2m":[65,70,72],"dew_point_2m":[20,23,24]}}`))
+			"temperature_2m":[27,29,null],"relative_humidity_2m":[65,70,72],"dew_point_2m":[20,23,24],
+			"weather_code":[0,61,3],"is_day":[1,1,1]}}`))
 	}))
 	defer srv.Close()
 	c := New()
@@ -64,6 +65,9 @@ func TestLectureOpenMeteo(t *testing.T) {
 	if got.TempC != 29 || got.DewPointC != 23 || got.HeatPct < 5 {
 		t.Fatalf("heure la plus proche : %+v", got)
 	}
+	if got.Code == nil || *got.Code != 61 || got.IsDay == nil || !*got.IsDay {
+		t.Fatalf("état du ciel à 14 h : code %v, jour %v, attendu pluie (61) de jour", got.Code, got.IsDay)
+	}
 	// Même jour, même lieu : servi par le cache.
 	if _, err := c.At(context.Background(), 48.857, 2.352, at.Add(-time.Hour)); err != nil || calls != 1 {
 		t.Fatalf("cache : err=%v, appels=%d", err, calls)
@@ -71,5 +75,28 @@ func TestLectureOpenMeteo(t *testing.T) {
 	// 15 h n'a pas de température : la plus proche reste 14 h.
 	if got, _ := c.At(context.Background(), 48.8566, 2.3522, at.Add(40*time.Minute)); got == nil || got.TempC != 29 {
 		t.Fatalf("heure sans donnée : %+v", got)
+	}
+}
+
+// L'archive (courses de plus de 80 jours) n'est interrogée que sur ce qui
+// pèse sur l'allure : l'état du ciel ne vaut pas le risque d'un refus.
+func TestArchiveSansEtatDuCiel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("hourly"); got != hourlyFields {
+			t.Errorf("archive : champs demandés %s, attendu %s", got, hourlyFields)
+		}
+		_, _ = w.Write([]byte(`{"hourly":{"time":["2025-01-10T08:00"],
+			"temperature_2m":[4],"relative_humidity_2m":[80],"dew_point_2m":[1]}}`))
+	}))
+	defer srv.Close()
+	c := New()
+	c.forecastURL, c.archiveURL = "http://127.0.0.1:1", srv.URL
+
+	got, err := c.At(context.Background(), 48.86, 2.35, time.Date(2025, 1, 10, 8, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Code != nil || got.IsDay != nil {
+		t.Fatalf("archive : état du ciel %v / %v, attendu absent", got.Code, got.IsDay)
 	}
 }

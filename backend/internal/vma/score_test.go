@@ -378,6 +378,25 @@ func TestEnduranceAuDessusDe90ResteDur(t *testing.T) {
 	}
 }
 
+// Le plafond cardio ne juge que le haut : un cœur très bas en endurance
+// fondamentale, c'est bien mené, jamais une faute.
+func TestEnduranceCoeurBasNeCoutePas(t *testing.T) {
+	paces := around(efPace, -5, 4, -6, 5, 3, -4, 6, -5, 4, -2)
+	bas := Score(fakeRun(testVma, paces, 112, 0.3, testHrMax))
+	enZone := Score(fakeRun(testVma, paces, 142, 0.3, testHrMax))
+
+	pts, _ := componentOf(bas, "hr_zone")
+	if pts != 100 {
+		t.Errorf("cœur à 112 bpm sous un plafond de 150 : zone cardio %d, attendu 100", pts)
+	}
+	if bas.HrInZonePct == nil || *bas.HrInZonePct != 100 {
+		t.Errorf("part sous le plafond %v, attendu 100 %%", bas.HrInZonePct)
+	}
+	if bas.Total < enZone.Total {
+		t.Errorf("cœur plus bas, note plus basse : %d contre %d", bas.Total, enZone.Total)
+	}
+}
+
 func TestEnduranceTropRapideCoute(t *testing.T) {
 	// 77 % de VMA : encore classée endurance, mais au-dessus de la zone.
 	fast := math.Round(3600 / (testVma * 0.77))
