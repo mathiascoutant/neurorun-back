@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -21,15 +22,23 @@ const (
 )
 
 type Client struct {
-	http *http.Client
+	http    *http.Client
+	sendURL string
 	// accessToken : requis seulement si « Enhanced Security for Push Notifications » est activé
 	// sur le compte Expo. Vide sinon.
 	accessToken string
 }
 
 func New(accessToken string) *Client {
+	send := expoSendURL
+	// Réservé aux essais de bout en bout : un faux Expo local, pour lire les
+	// notifications envoyées sans téléphone.
+	if u := strings.TrimSpace(os.Getenv("EXPO_PUSH_URL")); u != "" {
+		send = u
+	}
 	return &Client{
 		http:        &http.Client{Timeout: 15 * time.Second},
+		sendURL:     send,
 		accessToken: strings.TrimSpace(accessToken),
 	}
 }
@@ -117,7 +126,7 @@ func (c *Client) sendBatch(ctx context.Context, tokens []string, m Message) ([]s
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, expoSendURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.sendURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

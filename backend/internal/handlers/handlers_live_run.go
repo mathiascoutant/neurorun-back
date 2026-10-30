@@ -204,8 +204,9 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 		resp["needs_vma_test"] = !h.userHasVmaTest(r.Context(), u.ID)
 	}
 	// Uniquement ici, sur une vraie création : un réessai de la montre (duplicate)
-	// ressort plus haut et ne renotifie pas les amis.
+	// ressort plus haut et ne renotifie ni les amis, ni le coureur.
 	h.notifyFriendsOfRun(u, &run)
+	h.notifyRunDone(u, &run)
 	h.queueStravaUpload(u, &run)
 	// La course est arrivée : son direct s'arrête, même si l'appareil n'a pas pu
 	// le dire lui-même (réseau coupé à l'arrivée, app tuée).
