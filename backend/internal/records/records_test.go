@@ -130,3 +130,34 @@ func TestStravaToFetch(t *testing.T) {
 		t.Error("3 fait 4 km : ne couvre aucune distance")
 	}
 }
+
+// Strava écrit « 5K », « 10K », « Half-Marathon » : la v1 attendait « 5k » et
+// laissait les 10 km de côté.
+func TestStravaDistance(t *testing.T) {
+	cases := map[string]string{
+		"5K": "5k", "5k": "5k", "10K": "10k", "Half-Marathon": "half", "half marathon": "half", "Marathon": "marathon",
+	}
+	for name, want := range cases {
+		d, ok := StravaDistance(name)
+		if !ok || d.ID != want {
+			t.Errorf("%q → %q (ok %v), attendu %q", name, d.ID, ok, want)
+		}
+	}
+	for _, name := range []string{"1K", "15K", "10 mile", "400m"} {
+		if _, ok := StravaDistance(name); ok {
+			t.Errorf("%q ne fait pas partie des distances suivies", name)
+		}
+	}
+}
+
+func TestFromWholeRun(t *testing.T) {
+	if got, ok := FromWholeRun(10300, 3090, 10000); !ok || math.Abs(got-3000) > 0.01 {
+		t.Errorf("10,3 km en 51:30 → %v (ok %v), attendu 3000 s", got, ok)
+	}
+	if _, ok := FromWholeRun(9950, 3000, 10000); ok {
+		t.Error("9,95 km ne couvre pas 10 km")
+	}
+	if _, ok := FromWholeRun(11000, 3300, 10000); ok {
+		t.Error("11 km : trop long pour supposer l'allure moyenne")
+	}
+}

@@ -58,14 +58,14 @@ func (d *DB) StravaBestEffortsByUser(ctx context.Context, userID primitive.Objec
 }
 
 // SaveStravaBestEfforts enregistre les portions lues d'une activité.
-func (d *DB) SaveStravaBestEfforts(ctx context.Context, userID primitive.ObjectID, stravaID int64, efforts map[string]models.StravaEffort) error {
+func (d *DB) SaveStravaBestEfforts(ctx context.Context, userID primitive.ObjectID, stravaID int64, efforts map[string]models.StravaEffort, version int) error {
 	if efforts == nil {
 		efforts = map[string]models.StravaEffort{}
 	}
 	_, err := d.stravaBestEfforts.UpdateOne(ctx,
 		bson.M{"user_id": userID, "strava_id": stravaID},
 		bson.M{
-			"$set":         bson.M{"efforts": efforts, "fetched_at": time.Now().UTC()},
+			"$set":         bson.M{"efforts": efforts, "fetched_at": time.Now().UTC(), "v": version},
 			"$setOnInsert": bson.M{"_id": primitive.NewObjectID()},
 		},
 		options.Update().SetUpsert(true),

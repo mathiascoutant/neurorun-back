@@ -17,6 +17,9 @@ type StravaBestEfforts struct {
 	// sortie n'en a aucune : elle n'est pas redemandée pour autant.
 	Efforts   map[string]StravaEffort `bson:"efforts"`
 	FetchedAt time.Time               `bson:"fetched_at"`
+	// Version : version de la lecture (records.StravaEffortsVersion). Absente
+	// sur les premières lectures, qui sont à refaire.
+	Version int `bson:"v,omitempty"`
 }
 
 // StravaEffort : une portion, en temps écoulé, et son départ.

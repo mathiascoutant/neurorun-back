@@ -10,7 +10,9 @@ package records
 import (
 	"math"
 	"sort"
+	"strings"
 	"time"
+	"unicode"
 
 	"runapp/internal/models"
 	"runapp/internal/weather"
@@ -21,7 +23,8 @@ type Distance struct {
 	ID     string  `json:"id"`
 	Label  string  `json:"label"`
 	Meters float64 `json:"distance_m"`
-	// StravaName : nom de la portion dans les best_efforts Strava.
+	// StravaName : nom de la portion dans les best_efforts Strava, comparé
+	// sans casse ni ponctuation (Strava écrit « 5K », « Half-Marathon »).
 	StravaName string `json:"-"`
 }
 
@@ -36,6 +39,11 @@ var Distances = []Distance{
 const (
 	SourceNeuroRun = "neurorun"
 	SourceStrava   = "strava"
+
+	// StravaEffortsVersion : version de la lecture des best_efforts. Une sortie
+	// lue par une version antérieure est relue (la v1 ne reconnaissait pas
+	// « 5K » ni « 10K » et les a gardées vides).
+	StravaEffortsVersion = 2
 
 	// Allures plausibles sur une portion entière : plus vite que 2:30/km, c'est
 	// un GPS qui a sauté ; plus lent que 20:00/km, ce n'est plus de la course.
@@ -64,6 +72,38 @@ type Effort struct {
 	Weather      *weather.Conditions `json:"weather,omitempty"`
 	// PR : c'était un record le jour où il a été couru (progression).
 	PR bool `json:"pr"`
+}
+
+// StravaDistance : la distance d'une portion Strava d'après son nom.
+func StravaDistance(name string) (Distance, bool) {
+	key := normalizeName(name)
+	for _, d := range Distances {
+		if normalizeName(d.StravaName) == key {
+			return d, true
+		}
+	}
+	return Distance{}, false
+}
+
+// normalizeName : « Half-Marathon » → « halfmarathon », « 5K » → « 5k ».
+func normalizeName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// FromWholeRun : une sortie à peine plus longue que la distance, à son allure
+// moyenne. Sert tant que ses portions exactes ne sont pas connues.
+func FromWholeRun(runDistanceM, movingSec, meters float64) (float64, bool) {
+	if runDistanceM < meters || runDistanceM > meters*wholeRunSlack || movingSec <= 0 {
+		return 0, false
+	}
+	t := movingSec * meters / runDistanceM
+	return t, Plausible(t, meters)
 }
 
 // Plausible écarte les portions impossibles à pied.

@@ -158,7 +158,12 @@ func (h *Handlers) addStravaRecords(
 		known = map[int64]models.StravaBestEfforts{}
 	}
 	knownIDs := make(map[int64]bool, len(known))
-	for id := range known {
+	for id, be := range known {
+		// Lue par une version antérieure : à relire.
+		if be.Version < records.StravaEffortsVersion {
+			delete(known, id)
+			continue
+		}
 		knownIDs[id] = true
 	}
 	cands := make([]records.Candidate, 0, len(kept))
@@ -180,17 +185,14 @@ func (h *Handlers) addStravaRecords(
 			break
 		}
 		efforts := stravaEffortsOf(det)
-		if err := h.db.SaveStravaBestEfforts(ctx, u.ID, id, efforts); err != nil {
+		if err := h.db.SaveStravaBestEfforts(ctx, u.ID, id, efforts, records.StravaEffortsVersion); err != nil {
 			log.Printf("records: enregistrement portions %d: %v", id, err)
 		}
-		known[id] = models.StravaBestEfforts{StravaID: id, Efforts: efforts}
+		known[id] = models.StravaBestEfforts{StravaID: id, Efforts: efforts, Version: records.StravaEffortsVersion}
 	}
 
 	for _, a := range kept {
-		be, ok := known[a.ID]
-		if !ok {
-			continue
-		}
+		be := known[a.ID]
 		var lat, lon *float64
 		if a.StartLat != nil && a.StartLng != nil {
 			lat, lon = roundedCoord(*a.StartLat), roundedCoord(*a.StartLng)
@@ -198,7 +200,14 @@ func (h *Handlers) addStravaRecords(
 		for _, d := range records.Distances {
 			e, ok := be.Efforts[d.ID]
 			if !ok || !records.Plausible(e.TimeSec, d.Meters) {
-				continue
+				// Portions inconnues (pas encore lues, ou Strava n'en a pas
+				// chronométré) : une sortie à peine plus longue que la distance
+				// vaut preuve à son allure moyenne.
+				t, whole := records.FromWholeRun(a.DistanceM, float64(a.MovingSec), d.Meters)
+				if !whole {
+					continue
+				}
+				e = models.StravaEffort{TimeSec: t, StartAt: a.StartAt}
 			}
 			from := e.StartAt
 			if from.IsZero() {
@@ -224,15 +233,14 @@ func (h *Handlers) addStravaRecords(
 func stravaEffortsOf(det *strava.DetailedActivity) map[string]models.StravaEffort {
 	out := map[string]models.StravaEffort{}
 	for _, be := range det.BestEfforts {
-		for _, d := range records.Distances {
-			if be.Name != d.StravaName || be.ElapsedTime <= 0 {
-				continue
-			}
-			start, _ := time.Parse(time.RFC3339, be.StartDate)
-			t := float64(be.ElapsedTime)
-			if prev, ok := out[d.ID]; !ok || t < prev.TimeSec {
-				out[d.ID] = models.StravaEffort{TimeSec: t, StartAt: start.UTC()}
-			}
+		d, ok := records.StravaDistance(be.Name)
+		if !ok || be.ElapsedTime <= 0 {
+			continue
+		}
+		start, _ := time.Parse(time.RFC3339, be.StartDate)
+		t := float64(be.ElapsedTime)
+		if prev, ok := out[d.ID]; !ok || t < prev.TimeSec {
+			out[d.ID] = models.StravaEffort{TimeSec: t, StartAt: start.UTC()}
 		}
 	}
 	return out
