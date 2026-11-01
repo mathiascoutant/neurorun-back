@@ -20,6 +20,8 @@ const (
 	// AdminEventAmbassadorSigned : un ambassadeur a signé son contrat, qui attend la
 	// contre-signature de NeuroRun pour prendre effet.
 	AdminEventAmbassadorSigned = "ambassador_signed"
+	// AdminEventShopOrder : commande payée sur la boutique, à expédier.
+	AdminEventShopOrder = "shop_order"
 )
 
 // AdminNotification : évènement destiné aux administrateurs. Historique consultable dans

@@ -416,10 +416,26 @@ func (h *Handlers) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 			log.Printf("webhook %s: session %s introuvable: %v", event.Type, object.ID, err)
 			break
 		}
+		if _, isShop := shopOrderIDFromSession(sess); isShop {
+			if _, err := h.finalizeShopSession(r.Context(), sess); err != nil {
+				log.Printf("webhook %s: commande boutique %s: %v", event.Type, object.ID, err)
+			}
+			break
+		}
 		if sess.Subscription == nil || sess.Subscription.ID == "" {
 			break
 		}
 		h.syncSubscriptionByID(r.Context(), sess.Subscription.ID, event.Type)
+	case "checkout.session.expired":
+		// Paiement abandonné sur la boutique : le stock réservé revient en vente.
+		sess, err := h.stripe.CheckoutSessions.Get(object.ID, nil)
+		if err != nil {
+			log.Printf("webhook %s: session %s introuvable: %v", event.Type, object.ID, err)
+			break
+		}
+		if oid, isShop := shopOrderIDFromSession(sess); isShop {
+			h.expireShopOrder(r.Context(), oid)
+		}
 	case "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted":
 		sub, err := h.stripe.Subscriptions.Get(object.ID, nil)
 		if err != nil {

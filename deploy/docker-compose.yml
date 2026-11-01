@@ -15,4 +15,10 @@ services:
     image: ghcr.io/mathiascoutant/neurorun-back:latest
     restart: unless-stopped
     env_file: .env
+    environment:
+      SHOP_MEDIA_DIR: /data/shop-media
+    volumes:
+      # Images et vidéos de la boutique, envoyées depuis l'admin : un dossier du VPS, pour qu'elles
+      # survivent aux redéploiements et restent accessibles hors du conteneur.
+      - /home/ubuntu/projects/files/neurorun/boutique:/data/shop-media
     network_mode: host

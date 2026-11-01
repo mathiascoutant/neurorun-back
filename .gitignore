@@ -6,3 +6,6 @@ backend/.env
 # Copies de sauvegarde (.env.bak…) : mêmes secrets que le .env.
 .env.*
 !.env.example
+
+# Images et vidéos de la boutique envoyées en local
+backend/data/

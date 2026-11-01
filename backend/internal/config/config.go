@@ -42,6 +42,9 @@ type Config struct {
 	StripePublishableKey string
 	// StripeWebhookSecret : `whsec_...` — sans lui l’endpoint webhook refuse tout (signature non vérifiable).
 	StripeWebhookSecret string
+	// ShopMediaDir : dossier des images et vidéos de la boutique. En production, un dossier du VPS
+	// monté dans le conteneur : sans lui, les fichiers disparaîtraient à chaque redéploiement.
+	ShopMediaDir string
 	// ExpoAccessToken : facultatif — requis seulement si « Enhanced Security for Push Notifications »
 	// est activé sur le compte Expo. Les notifications admin partent sans lui par défaut.
 	ExpoAccessToken string
@@ -108,6 +111,7 @@ func Load() (*Config, error) {
 		StripeSecretKey:      strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
 		StripePublishableKey: strings.TrimSpace(os.Getenv("STRIPE_PUBLISHABLE_KEY")),
 		StripeWebhookSecret:  strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		ShopMediaDir:         getenv("SHOP_MEDIA_DIR", "data/shop-media"),
 
 		ExpoAccessToken: strings.TrimSpace(os.Getenv("EXPO_ACCESS_TOKEN")),
 

@@ -108,6 +108,48 @@ func (h *Handlers) notifyAdmins(kind string, u *models.User, plan, device string
 	}()
 }
 
+// notifyAdminsText : même circuit que notifyAdmins, pour un évènement sans compte rattaché (un achat
+// sur la boutique se fait sans inscription).
+func (h *Handlers) notifyAdminsText(kind, title, body, email string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+		defer cancel()
+
+		n := &models.AdminNotification{
+			Kind:      kind,
+			Title:     title,
+			Body:      body,
+			UserEmail: email,
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := h.db.InsertAdminNotification(ctx, n); err != nil {
+			log.Printf("admin notif: enregistrement %s: %v", kind, err)
+		}
+		tokens, err := h.db.ListActiveAdminPushTokens(ctx)
+		if err != nil {
+			log.Printf("admin notif: lecture jetons push: %v", err)
+			return
+		}
+		if len(tokens) == 0 {
+			return
+		}
+		badge, _ := h.db.CountUnreadAdminNotifications(ctx)
+		badgeInt := int(badge)
+		invalid, err := h.pushClient.Send(ctx, tokens, push.Message{
+			Title: title,
+			Body:  body,
+			Badge: &badgeInt,
+			Data:  map[string]any{"kind": kind},
+		})
+		if err != nil {
+			log.Printf("admin notif: envoi push: %v", err)
+		}
+		if len(invalid) > 0 {
+			_ = h.db.DeleteAdminPushTokens(ctx, invalid)
+		}
+	}()
+}
+
 func adminNotificationText(kind, name, plan, label, device string) (title, body string) {
 	paid := isPaidPlan(plan)
 	switch {

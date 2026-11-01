@@ -63,6 +63,9 @@ type DB struct {
 	stravaRuns *mongo.Collection
 	// stravaBestEfforts : portions chronométrées des sorties Strava (records).
 	stravaBestEfforts *mongo.Collection
+	// shopProducts / shopOrders : boutique en ligne, catalogue et commandes.
+	shopProducts *mongo.Collection
+	shopOrders   *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -127,6 +130,18 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	coachSuggestions := database.Collection("coach_suggestions")
 	stravaRuns := database.Collection("strava_runs")
 	stravaBestEfforts := database.Collection("strava_best_efforts")
+	shopProducts := database.Collection("shop_products")
+	shopOrders := database.Collection("shop_orders")
+	_, _ = shopProducts.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "slug", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	_, _ = shopOrders.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "status", Value: 1}, {Key: "expires_at", Value: 1}},
+	})
+	_, _ = shopOrders.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "created_at", Value: -1}},
+	})
 	_, _ = stravaBestEfforts.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "strava_id", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -286,6 +301,8 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		coachSuggestions:   coachSuggestions,
 		stravaRuns:         stravaRuns,
 		stravaBestEfforts:  stravaBestEfforts,
+		shopProducts:       shopProducts,
+		shopOrders:         shopOrders,
 	}, nil
 }
 
