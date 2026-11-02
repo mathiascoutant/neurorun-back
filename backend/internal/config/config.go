@@ -34,6 +34,9 @@ type Config struct {
 	CORSAllowed        []string
 	OpenAIAPIKey       string
 	OpenAIModel        string
+	// Anthropic : modélisation 3D de la boutique. Sans clé, cette seule fonction est désactivée.
+	AnthropicAPIKey  string
+	Anthropic3DModel string
 	// AdminEmail : à l’inscription, ce compte reçoit le rôle admin (comparaison insensible à la casse).
 	AdminEmail string
 	// Stripe : paiement réel des offres. Sans clé secrète, les endpoints de paiement répondent 503
@@ -106,6 +109,8 @@ func Load() (*Config, error) {
 		FrontendURL:        frontend,
 		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:        getenv("OPENAI_MODEL", "gpt-4o"),
+		AnthropicAPIKey:    strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
+		Anthropic3DModel:   getenv("ANTHROPIC_3D_MODEL", "claude-opus-5-5"),
 		AdminEmail:         strings.TrimSpace(strings.ToLower(os.Getenv("ADMIN_EMAIL"))),
 
 		StripeSecretKey:      strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),

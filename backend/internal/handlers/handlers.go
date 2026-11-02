@@ -20,6 +20,7 @@ import (
 	"runapp/internal/models"
 	oai "runapp/internal/openai"
 	"runapp/internal/push"
+	"runapp/internal/scene3d"
 	"runapp/internal/store"
 	"runapp/internal/strava"
 	"runapp/internal/weather"
@@ -35,6 +36,8 @@ type Handlers struct {
 	db     *store.DB
 	strava *strava.Client
 	openai *oai.Client
+	// sceneGenerator : modélisation 3D de la boutique. nil si ANTHROPIC_API_KEY n’est pas configurée.
+	sceneGenerator sceneGenerator
 	// stripe : nil si les clés ne sont pas configurées (paiement carte désactivé).
 	stripe *stripeclient.API
 	// apple : App Store Server API — vérification des achats intégrés iOS. nil si non configuré.
@@ -68,6 +71,9 @@ func New(cfg *config.Config, db *store.DB) *Handlers {
 		openai:     oai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel),
 		pushClient: push.New(cfg.ExpoAccessToken),
 		weather:    weather.New(),
+	}
+	if cfg.AnthropicAPIKey != "" {
+		h.sceneGenerator = scene3d.New(cfg.AnthropicAPIKey, cfg.Anthropic3DModel)
 	}
 	if cfg.StripeConfigured() {
 		h.stripe = stripeclient.New(cfg.StripeSecretKey, nil)
@@ -1620,6 +1626,7 @@ func (h *Handlers) Mount(r chi.Router) {
 	r.Post("/public/paid-signup/preview", h.PaidSignupPreview)
 	r.Get("/public/shop", h.PublicShop)
 	r.Get("/public/shop/products/{slug}", h.PublicShopProduct)
+	r.Get("/public/shop/products/{slug}/model3d", h.PublicShopModel3D)
 	r.Get("/public/shop/terms", h.PublicShopTerms)
 	r.Get("/public/shop/media/{file}", h.PublicShopMedia)
 	r.Post("/public/shop/quote", h.PublicShopQuote)
@@ -1671,6 +1678,13 @@ func (h *Handlers) Mount(r chi.Router) {
 		ar.Delete("/shop/products/{id}", h.AdminDeleteShopProduct)
 		ar.Post("/shop/products/{id}/media", h.AdminUploadShopMedia)
 		ar.Delete("/shop/products/{id}/media/{mediaId}", h.AdminDeleteShopMedia)
+		ar.Get("/shop/products/{id}/model3d", h.AdminGetShopModel3D)
+		ar.Post("/shop/products/{id}/model3d/photos", h.AdminUploadShopModel3DPhoto)
+		ar.Delete("/shop/products/{id}/model3d/photos/{photoId}", h.AdminDeleteShopModel3DPhoto)
+		ar.Post("/shop/products/{id}/model3d/generate", h.AdminGenerateShopModel3D)
+		ar.Post("/shop/products/{id}/model3d/undo", h.AdminUndoShopModel3D)
+		ar.Post("/shop/products/{id}/model3d/publish", h.AdminPublishShopModel3D)
+		ar.Delete("/shop/products/{id}/model3d/publish", h.AdminUnpublishShopModel3D)
 		ar.Get("/shop/orders", h.AdminListShopOrders)
 		ar.Patch("/shop/orders/{id}", h.AdminPatchShopOrder)
 		ar.Get("/shop/settings", h.AdminGetShopSettings)

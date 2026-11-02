@@ -66,6 +66,8 @@ type DB struct {
 	// shopProducts / shopOrders : boutique en ligne, catalogue et commandes.
 	shopProducts *mongo.Collection
 	shopOrders   *mongo.Collection
+	// shopModel3D : modélisation 3D d’un article (photos de travail, versions de la scène).
+	shopModel3D *mongo.Collection
 }
 
 // tcp4OnlyDialer évite les chemins IPv6 cassés (Docker / VPS) qui se traduisent souvent par
@@ -302,6 +304,7 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 		stravaRuns:         stravaRuns,
 		stravaBestEfforts:  stravaBestEfforts,
 		shopProducts:       shopProducts,
+		shopModel3D:        database.Collection("shop_model3d"),
 		shopOrders:         shopOrders,
 	}, nil
 }

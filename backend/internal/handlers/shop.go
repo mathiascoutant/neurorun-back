@@ -112,12 +112,15 @@ type publicShopProduct struct {
 	Sizes          []publicShopSize   `json:"sizes"`
 	Media          []models.ShopMedia `json:"media"`
 	SoldOut        bool               `json:"sold_out"`
+	// Has3D : une vue 3D est disponible (`GET .../products/{slug}/model3d`).
+	Has3D bool `json:"has_3d,omitempty"`
 }
 
 func toPublicShopProduct(p *models.ShopProduct, now time.Time) publicShopProduct {
 	out := publicShopProduct{
 		ID:          p.ID.Hex(),
 		Slug:        p.Slug,
+		Has3D:       p.Model3DPublished,
 		Name:        p.Name,
 		Description: p.Description,
 		PriceCents:  p.CurrentPriceCents(now),
@@ -924,6 +927,7 @@ func (h *Handlers) AdminDeleteShopProduct(w http.ResponseWriter, r *http.Request
 	for _, m := range p.Media {
 		h.removeShopMediaFile(m.ID)
 	}
+	h.removeShopModel3D(r.Context(), p)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

@@ -53,8 +53,10 @@ type ShopProduct struct {
 	PromoEndsAt *time.Time  `bson:"promo_ends_at,omitempty" json:"promo_ends_at,omitempty"`
 	Sizes       []ShopSize  `bson:"sizes" json:"sizes"`
 	Media       []ShopMedia `bson:"media" json:"media"`
-	CreatedAt   time.Time   `bson:"created_at" json:"created_at"`
-	UpdatedAt   time.Time   `bson:"updated_at" json:"updated_at"`
+	// Model3DPublished : la fiche propose une vue 3D (scène dans `shop_model3d`).
+	Model3DPublished bool      `bson:"model3d_published,omitempty" json:"model3d_published,omitempty"`
+	CreatedAt        time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt        time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // PromoActive : la promotion s’applique-t-elle à cet instant ?
