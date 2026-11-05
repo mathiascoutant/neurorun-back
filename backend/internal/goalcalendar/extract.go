@@ -38,7 +38,7 @@ Chaque élément du tableau a exactement les clés :
 - "session" : entier 1..S (ordre Séance 1, 2… dans la semaine)
 - "distance_km" : nombre décimal = distance totale **minimum** à couvrir sur Strava ce jour (échauff + corps + retour). Pour une sortie « 6 km facile », mets 6.
 - "pace_sec_per_km" : nombre (secondes pour parcourir 1 km en allure moyenne **cible pour toute la sortie**) ou null si le plan ne permet pas de l’estimer sans ambiguïté.
-- "summary" : courte phrase (facultatif, peut être "").
+- "summary" : courte phrase qui dit ce qu'est la séance (ex. « Fractionné 6x400 m », « Sortie longue en endurance »).
 
 Le tableau doit contenir **exactement** W×S entrées, dans l’ordre : semaine 1 sessions 1..S, semaine 2… jusqu’à la semaine W.`
 
@@ -73,10 +73,18 @@ Le tableau doit contenir **exactement** W×S entrées, dans l’ordre : semaine 
 		return nil, errors.New("wrong count")
 	}
 
+	blocks := planWeekBlocks(plan)
+	seen := make(map[string]bool, len(rows))
 	out := make([]models.PlannedSession, 0, len(rows))
 	for _, r := range rows {
 		if r.Week < 1 || r.Week > weeks || r.Session < 1 || r.Session > spw {
 			return nil, errors.New("invalid week/session")
+		}
+		// Le compte peut être bon avec une séance en double et une autre oubliée.
+		if k := sessionKey(r.Week, r.Session); seen[k] {
+			return nil, errors.New("duplicate session")
+		} else {
+			seen[k] = true
 		}
 		if r.DistanceKm < 0.2 {
 			return nil, errors.New("invalid distance")
@@ -85,12 +93,18 @@ Le tableau doit contenir **exactement** W×S entrées, dans l’ordre : semaine 
 		if p != nil && (*p < 120 || *p > 1200) {
 			p = nil
 		}
+		summary := strings.TrimSpace(r.Summary)
+		if summary == "" {
+			if it, ok := sessionAt(weekSessions(blocks[r.Week]), r.Session); ok {
+				summary = sessionSummary(it.text)
+			}
+		}
 		out = append(out, models.PlannedSession{
 			Week:           r.Week,
 			Session:        r.Session,
 			DistanceKm:     r.DistanceKm,
 			PaceSecPerKm:   p,
-			Summary:        strings.TrimSpace(r.Summary),
+			Summary:        summary,
 		})
 	}
 	return out, nil

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"runapp/internal/goalcalendar"
 	"runapp/internal/models"
+	oai "runapp/internal/openai"
 )
 
 // synthesizeTrainingPlan rédige le plan. `onProgress` est facultatif : quand il est
@@ -64,8 +67,8 @@ Exactement 3 puces courtes : ce qui va t'aider à progresser sans te blesser.
 5 à 8 puces **avec chiffres** : **allure course (objectif)** en min/km ; **allure facile / endurance** ; **allure seuil ou tempo ou « un peu sous allure course »** ; pour au moins deux distances de fraction courantes (ex. 400 m et 800 m ou 1 km), donne un **temps cible par répétition** cohérent avec l’objectif. Une ligne peut rappeler l’échauffement **10–15 min** ou **1,5–2 km** à allure facile. Pas de jargon non chiffré du type « allure 10 km » sans min/km à côté.
 
 ## Calendrier — semaine par semaine
-Pour chaque semaine, utilise un sous-titre ### Semaine 1, ### Semaine 2, etc. (autant que les semaines disponibles jusqu'à la course).
-Pour **chaque** séance (Séance 1, 2, …) une **seule puce** ou une **liste courte** qui précise **dans cet ordre** : (1) échauffement avec durée ou km + allure facile en min/km ; (2) corps de séance avec volumes, **nombre de répétitions**, et pour chaque type de rep **temps visé** ou **allure min/km** ; (3) retour au calme (km ou min + allure). Évite les formulations vagues (« tranquille », « un peu vite ») sans fourchette min/km. Respecte le nombre de séances par semaine demandé.
+Pour chaque semaine, utilise un sous-titre ### Semaine 1, ### Semaine 2, etc. **Toutes** les semaines jusqu'à la course sont écrites une par une : jamais de renvoi du type « répéter la structure pour les semaines suivantes ».
+Pour **chaque** séance (- **Séance 1 :** …, - **Séance 2 :** …) une **seule puce** ou une **liste courte** qui précise **dans cet ordre** : (1) échauffement avec durée ou km + allure facile en min/km ; (2) corps de séance avec volumes, **nombre de répétitions**, et pour chaque type de rep **temps visé** ou **allure min/km** ; (3) retour au calme (km ou min + allure). Évite les formulations vagues (« tranquille », « un peu vite ») sans fourchette min/km. Respecte le nombre de séances par semaine demandé.
 
 ## Dans les derniers jours avant la course
 2 à 4 puces : repos, dernier petit effort **avec durée et allure facile** si tu en proposes un, pas de gros volume.
@@ -101,7 +104,7 @@ Exactement 3 puces courtes.
 5 à 8 puces **avec chiffres** (min/km, temps par répétition) dérivés **de l’objectif**, pas d’un historique fictif.
 
 ## Calendrier — semaine par semaine
-### Semaine 1, ### Semaine 2, etc. Pour chaque séance : échauffement (durée/km + allure), corps, retour au calme — comme pour le mode Strava.
+### Semaine 1, ### Semaine 2, etc. **Toutes** les semaines jusqu'à la course sont écrites une par une : jamais de renvoi du type « répéter la structure pour les semaines suivantes ». Pour chaque séance (- **Séance 1 :** …, - **Séance 2 :** …) : échauffement (durée/km + allure), corps, retour au calme — comme pour le mode Strava.
 
 ## Dans les derniers jours avant la course
 2 à 4 puces.
@@ -123,7 +126,8 @@ Chrono ou intention : %s.
 Échéance dans %d semaine(s).
 Disponibilité : %d séance(s) par semaine en moyenne (toutes les séances de chaque semaine doivent être décrites — pas de jour inventé côté appli : seuls le nombre et le contenu comptent).
 Rédige le plan complet en respectant les titres et le style demandés. Pas de vouvoiement.
-Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des temps par répétition.`, label, models.GoalTerrainLabel(terrain), targetTime, weeks, spw)
+Écris les %d semaines une par une, de ### Semaine 1 à ### Semaine %d : aucune ne doit être résumée ni renvoyée à une autre.
+Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des temps par répétition.`, label, models.GoalTerrainLabel(terrain), targetTime, weeks, spw, weeks, weeks)
 
 	var plan string
 	var err error
@@ -136,10 +140,43 @@ Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des 
 		return "", nil, err
 	}
 
+	// Le modèle résume au-delà de quelques semaines : ce qui manque est redemandé à
+	// la suite de ce qu'il a déjà écrit, pour que la progression reste continue. Un
+	// plan encore incomplet après ça n'est pas enregistré.
+	plan, err = goalcalendar.CompletePlanWeeks(ctx, plan, weeks, spw,
+		func(ctx context.Context, current string, wanted []int) (string, error) {
+			return h.openai.ChatMessages(ctx, []oai.ChatMessage{
+				{Role: "system", Content: system},
+				{Role: "user", Content: userQ},
+				{Role: "assistant", Content: current},
+				{Role: "user", Content: planWeeksRequest(wanted, weeks, spw)},
+			})
+		},
+		func(current string) {
+			if onProgress == nil {
+				return
+			}
+			sections, written := planUnitsWritten(current, weeks)
+			onProgress(planProgress{
+				Done:  sections + written,
+				Total: planTotalUnits(weeks),
+				Label: planStepLabel(written, weeks, sections),
+			})
+		},
+	)
+	if err != nil {
+		return "", nil, err
+	}
+
 	if onProgress != nil {
 		onProgress(planProgress{Done: planWritingUnits(weeks), Total: planTotalUnits(weeks), Label: "Découpage des séances"})
 	}
+	// Une réponse mal comptée arrive de temps en temps : une relance coûte moins cher
+	// qu'un découpage relu sans le modèle, moins précis sur les allures.
 	planned, exErr := goalcalendar.ExtractPlannedSessions(ctx, h.openai, plan, weeks, spw)
+	if exErr != nil || len(planned) == 0 {
+		planned, exErr = goalcalendar.ExtractPlannedSessions(ctx, h.openai, plan, weeks, spw)
+	}
 	if exErr != nil || len(planned) == 0 {
 		planned = goalcalendar.FallbackPlannedSessionsFromPlan(plan, weeks, spw)
 	}
@@ -151,4 +188,19 @@ Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des 
 		})
 	}
 	return plan, planned, nil
+}
+
+// planWeeksRequest demande au modèle les semaines qui manquent au plan.
+func planWeeksRequest(wanted []int, weeks, spw int) string {
+	nums := make([]string, len(wanted))
+	for i, w := range wanted {
+		nums[i] = strconv.Itoa(w)
+	}
+	return fmt.Sprintf(`Le plan s'arrête trop tôt : il manque des semaines. Écris maintenant les semaines %s d'un plan qui en compte %d, dans la continuité de ce qui précède : le volume et l'intensité progressent, puis la charge s'allège à l'approche de la course (la semaine %d est celle de la course).
+
+Réponds UNIQUEMENT avec ces semaines, en Markdown, sans introduction ni conclusion, sous cette forme :
+### Semaine N
+- **Séance 1 :** …
+jusqu'à la séance %d. Chaque séance est écrite en entier, avec ses allures en min/km et, si fractionné, ses temps par répétition. Jamais de renvoi du type « idem » ou « répéter la structure ».`,
+		strings.Join(nums, ", "), weeks, weeks, spw)
 }
