@@ -306,6 +306,10 @@ func nonZero(v float64) float64 {
 	return v
 }
 
+// feedCopySlack : écart maximal entre le départ d'une sortie (date Strava) et
+// l'envoi de la course NeuroRun correspondante (sa date dans le fil).
+const feedCopySlack = 24 * time.Hour
+
 // RunHistoryFeed renvoie une page d’historique mélangé : courses NeuroRun + courses Strava si le compte est lié.
 // Query: limit (défaut 10, max 30), before (RFC3339 / RFC3339Nano, curseur exclusif pour la pagination).
 func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
@@ -344,10 +348,19 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 		fetchN = 20
 	}
 
-	liveList, err := h.db.ListLiveRunsByUserBefore(r.Context(), u.ID, cursorBefore, fetchN)
+	// La course NeuroRun est datée de son envoi (fin de course), sa copie Strava
+	// de son départ : on lit aussi les courses NeuroRun un peu après le curseur,
+	// sinon une copie tombée juste en tête de page ne retrouve pas son original.
+	liveAll, err := h.db.ListLiveRunsByUserBefore(r.Context(), u.ID, cursorBefore.Add(feedCopySlack), fetchN+10)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "liste live impossible"})
 		return
+	}
+	liveList := make([]models.LiveRun, 0, len(liveAll))
+	for _, lr := range liveAll {
+		if lr.CreatedAt.Before(cursorBefore) {
+			liveList = append(liveList, lr)
+		}
 	}
 
 	var stravaActs []strava.RunActivity
@@ -358,6 +371,7 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 			stravaActs, err = h.strava.FetchRunActivitiesBefore(r.Context(), access, cursorBefore, fetchN)
 			if err == nil {
 				stravaIncluded = true
+				stravaActs = dropStravaCopies(stravaActs, liveAll)
 			}
 		}
 		h.forgetStravaIfRevoked(r.Context(), u, err)

@@ -110,3 +110,35 @@ func TestAppLiveRunCarriesHeartRate(t *testing.T) {
 		t.Fatalf("AvgHR attendu 185, obtenu %v", *act.AvgHR)
 	}
 }
+
+// Une course NeuroRun publiée sur Strava (ou poussée par Santé) ne doit plus
+// apparaître deux fois dans l'historique : seule la version NeuroRun reste.
+func TestDropStravaCopies(t *testing.T) {
+	start := time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC)
+	live := []models.LiveRun{
+		{
+			// Envoyée à la fin : created_at bien après le départ GPS.
+			CreatedAt:    start.Add(52 * time.Minute),
+			GpsStartTsMs: start.UnixMilli(),
+			DistanceM:    10000,
+			MovingSec:    3000,
+			Strava:       &models.LiveRunStrava{Status: models.StravaUploadDone, ActivityID: 42},
+		},
+		{
+			CreatedAt:    start.Add(26 * time.Hour),
+			GpsStartTsMs: start.Add(25 * time.Hour).UnixMilli(),
+			DistanceM:    5000,
+			MovingSec:    1500,
+		},
+	}
+	acts := []strava.RunActivity{
+		{ID: 42, StartAt: start.Add(20 * time.Second), DistanceM: 10020},             // publiée par NeuroRun
+		{ID: 43, StartAt: start.Add(25*time.Hour + time.Minute), DistanceM: 5100},    // copie Santé
+		{ID: 44, StartAt: start.Add(48 * time.Hour), DistanceM: 8000},                // vraie sortie Strava
+		{ID: 45, StartAt: start.Add(25*time.Hour + 30*time.Minute), DistanceM: 5000}, // même jour, autre sortie
+	}
+	got := dropStravaCopies(acts, live)
+	if len(got) != 2 || got[0].ID != 44 || got[1].ID != 45 {
+		t.Fatalf("attendu les sorties 44 et 45, obtenu %+v", got)
+	}
+}

@@ -142,3 +142,25 @@ func nearSameRun(a, b strava.RunActivity) bool {
 	dm := math.Abs(a.DistanceM - b.DistanceM)
 	return dm < 400
 }
+
+// dropStravaCopies retire les sorties Strava qui ne sont que la copie d'une course
+// NeuroRun : celle que NeuroRun y a publiée, ou celle que Santé / Garmin Connect y
+// a poussée de leur côté. Dans un historique, la course NeuroRun reste seule —
+// c'est elle qui porte la note, les fractions et la séance d'objectif.
+func dropStravaCopies(stravaRuns []strava.RunActivity, live []models.LiveRun) []strava.RunActivity {
+	if len(live) == 0 {
+		return stravaRuns
+	}
+	liveAs := liveRunsToRunActivities(live, nil)
+	out := stravaRuns[:0:0]
+next:
+	for _, s := range stravaRuns {
+		for _, l := range liveAs {
+			if nearSameRun(s, l) {
+				continue next
+			}
+		}
+		out = append(out, s)
+	}
+	return out
+}
