@@ -17,6 +17,7 @@ import (
 	"runapp/internal/appstore"
 	"runapp/internal/auth"
 	"runapp/internal/config"
+	"runapp/internal/goalcalendar"
 	"runapp/internal/models"
 	oai "runapp/internal/openai"
 	"runapp/internal/push"
@@ -36,6 +37,8 @@ type Handlers struct {
 	db     *store.DB
 	strava *strava.Client
 	openai *oai.Client
+	// coachAI : même compte OpenAI, modèle des conversations avec la personne.
+	coachAI *oai.Client
 	// sceneGenerator : modélisation 3D de la boutique. nil si ANTHROPIC_API_KEY n’est pas configurée.
 	sceneGenerator sceneGenerator
 	// stripe : nil si les clés ne sont pas configurées (paiement carte désactivé).
@@ -69,6 +72,7 @@ func New(cfg *config.Config, db *store.DB) *Handlers {
 		db:         db,
 		strava:     strava.New(cfg.StravaClientID, cfg.StravaClientSecret),
 		openai:     oai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel),
+		coachAI:    oai.New(cfg.OpenAIAPIKey, cfg.OpenAICoachModel),
 		pushClient: push.New(cfg.ExpoAccessToken),
 		weather:    weather.New(),
 	}
@@ -1190,6 +1194,13 @@ func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 			`Tu peux inviter à associer Strava dans l’app pour des repères basés sur les vraies sorties, sans insister.`
 	}
 
+	loc, _ := calendarLocation()
+	today := time.Now().In(loc)
+	system += "\n\nAujourd'hui : " + weekdayNameOf(today) + " " + goalcalendar.DateKey(today) + ".\n\n" + coachCareGuidelines
+	if views, err := h.loadShoeViews(r.Context(), u.ID); err == nil {
+		system += "\n\n" + shoesCoachBlock(views, loc)
+	}
+
 	msgs := []oai.ChatMessage{{Role: "system", Content: system}}
 	hist := conv.Messages
 	if len(hist) > chatHistoryMaxTurns {
@@ -1204,7 +1215,7 @@ func (h *Handlers) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	msgs = append(msgs, oai.ChatMessage{Role: "user", Content: b.Message})
 
-	reply, err := h.openai.ChatMessages(r.Context(), msgs)
+	reply, err := h.coachAI.ChatMessages(r.Context(), msgs)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return

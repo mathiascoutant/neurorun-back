@@ -3,11 +3,13 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"runapp/internal/goalcalendar"
 	"runapp/internal/models"
 	oai "runapp/internal/openai"
 	"runapp/internal/store"
@@ -88,19 +90,16 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 		actsJSON:  actsJSON,
 		hasStrava: hasStravaData,
 	}
+	if views, err := h.loadShoeViews(r.Context(), u.ID); err == nil {
+		tools.shoesBlock = shoesCoachBlock(views, loc)
+	}
 
 	msgs := []oai.ChatMessage{{Role: "system", Content: tools.systemPrompt(hasStravaData)}}
 	hist := g.CoachThread
 	if len(hist) > goalCoachMaxTurns {
 		hist = hist[len(hist)-goalCoachMaxTurns:]
 	}
-	for _, t := range hist {
-		if t.Role != "user" && t.Role != "assistant" {
-			continue
-		}
-		msgs = append(msgs, oai.ChatMessage{Role: t.Role, Content: t.Text})
-	}
-	msgs = append(msgs, oai.ChatMessage{Role: "user", Content: b.Message})
+	msgs = append(msgs, coachHistoryMessages(hist, b.Message, tools.now, loc)...)
 
 	reply, err := h.runGoalCoachTurn(r, msgs, tools)
 	if err != nil {
@@ -125,6 +124,39 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// coachHistoryMessages rejoue la discussion en datant chaque journée d'échanges.
+// Sans ces repères, le modèle lit « aujourd'hui, mercredi 4 » dans un vieux message
+// et s'y fie plutôt qu'à la date du calendrier : il reporte alors la mauvaise
+// séance, et la pose dans le passé.
+func coachHistoryMessages(hist []models.ChatTurn, message string, now time.Time, loc *time.Location) []oai.ChatMessage {
+	var out []oai.ChatMessage
+	lastDay := ""
+	for _, t := range hist {
+		if t.Role != "user" && t.Role != "assistant" {
+			continue
+		}
+		if !t.CreatedAt.IsZero() {
+			day := t.CreatedAt.In(loc)
+			if key := goalcalendar.DateKey(day); key != lastDay {
+				lastDay = key
+				out = append(out, oai.ChatMessage{Role: "system", Content: fmt.Sprintf(
+					"Échanges du %s %s : dans ces messages, « aujourd'hui », « demain » et « hier » se rapportent à ce jour-là, pas à la date actuelle.",
+					weekdayNameOf(day), key)})
+			}
+		}
+		out = append(out, oai.ChatMessage{Role: t.Role, Content: t.Text})
+	}
+	today := now.In(loc)
+	out = append(out,
+		oai.ChatMessage{Role: "system", Content: fmt.Sprintf(
+			"Nouveau message, envoyé aujourd'hui %s %s : « aujourd'hui » désigne ce jour, « demain » le %s %s.",
+			weekdayNameOf(today), goalcalendar.DateKey(today),
+			weekdayNameOf(today.AddDate(0, 0, 1)), goalcalendar.DateKey(today.AddDate(0, 0, 1)))},
+		oai.ChatMessage{Role: "user", Content: message},
+	)
+	return out
+}
+
 // runGoalCoachTurn laisse le modèle agir avant de répondre : tant qu'il demande des
 // actions, elles sont exécutées et leurs retours lui sont renvoyés. Au dernier tour
 // les outils sont fermés, pour qu'il conclue par du texte.
@@ -138,9 +170,9 @@ func (h *Handlers) runGoalCoachTurn(
 		var assistant oai.ChatMessage
 		var err error
 		if round >= goalCoachMaxToolRounds {
-			assistant, err = h.openai.ChatMessagesNoMoreTools(r.Context(), msgs, defs)
+			assistant, err = h.coachAI.ChatMessagesNoMoreTools(r.Context(), msgs, defs)
 		} else {
-			assistant, err = h.openai.ChatMessagesWithTools(r.Context(), msgs, defs)
+			assistant, err = h.coachAI.ChatMessagesWithTools(r.Context(), msgs, defs)
 		}
 		if err != nil {
 			if reply := fallbackCoachReply(tools.actions); reply != "" {
@@ -212,16 +244,17 @@ Tu suis L'OBJECTIF enregistré (distance, chrono, semaines, séances/semaine), s
 - Contrainte récurrente sur un jour → move_training_day (ou set_training_days pour rééquilibrer la semaine).
 - Empêchement daté (maladie, blessure, déplacement) → add_unavailability sur la période exacte ; les séances concernées sont reportées automatiquement, annonce leurs nouvelles dates telles que l'outil les renvoie.
 - Un seul jour à bouger → reschedule_session. Une séance à laisser tomber → skip_session.
+- Séance passée ratée : ne touche pas au calendrier si la personne ne le demande pas ; rassure-la, puis propose de la rattraper ou de la laisser.
+- « Aujourd'hui », « demain », « ma séance du jour » : calcule-les UNIQUEMENT depuis la date du jour donnée dans « Calendrier actuel », jamais depuis les dates citées dans les anciens messages. « Ma séance d'aujourd'hui » est celle marquée AUJOURD'HUI dans les prochaines séances ; s'il n'y en a pas, dis-le au lieu d'en déplacer une autre.
 - Charge, échéance ou chrono à revoir (arrêt long, objectif devenu irréaliste, surcharge) → update_goal_settings. Reprise à réécrire sans changer la structure → regenerate_plan. Ces deux outils sont lents : réserve-les aux vrais changements de fond.
 - Espace les séances : évite de coller deux séances exigeantes sur deux jours consécutifs. Si le déplacement demandé crée ce cas, applique-le quand même si la personne y tient, mais dis-le et propose une répartition alternative avec set_training_days.
 - Après une longue interruption, ne reprends pas la charge d'avant : réduis d'abord, puis remonte.
 
-**Ressenti et santé**
-- Demande ou rebondis sur : fatigue, sommeil, stress, humeur, douleurs ou gênes.
-- Tu ne diagnostiques pas. Si douleur forte, persistante ou inquiétante : encourage à consulter un·e professionnel·le de santé, et allège le plan en attendant.
+` + coachCareGuidelines + `
+- Douleur forte, persistante ou inquiétante : en plus du conseil de consulter, allège le plan en attendant avec tes outils.
 
 **Forme des réponses**
-3 à 8 phrases en général, ou quelques puces courtes. Quand tu as modifié le calendrier, dis précisément ce qui a changé, avec les jours et les dates. Si tu détailles une séance, donne des **allures min/km** et des **temps par répétition** pour du fractionné.
+3 à 8 phrases en général, ou quelques puces courtes. Quand tu as modifié le calendrier, dis précisément ce qui a changé, avec les jours et les dates. Quand tu parles d'une séance, décris-la d'après son contenu listé dans « Calendrier actuel » (distance, terrain, intensité), jamais d'après le type de l'objectif. Quand la personne parle de sa prochaine séance (ou la reporte), dis-lui en une ligne quelle paire mettre si une paire de la liste s'y prête mieux, ou si celle qu'elle porte d'habitude est usée. Si tu détailles une séance, donne des **allures min/km** et des **temps par répétition** pour du fractionné.
 
 **Objectif enregistré**
 - Distance : ` + t.goal.DistanceLabel + `
@@ -235,6 +268,7 @@ Tu suis L'OBJECTIF enregistré (distance, chrono, semaines, séances/semaine), s
 **Plan (référence)**
 ` + planCtx + `
 
+` + t.shoesBlock + `
 ` + activitiesBlock
 }
 

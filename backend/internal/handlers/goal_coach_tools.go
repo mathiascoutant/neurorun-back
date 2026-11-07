@@ -62,7 +62,9 @@ type goalCoachTools struct {
 	now       time.Time
 	actsJSON  []byte
 	hasStrava bool
-	actions   []coachAction
+	// shoesBlock : paires et usure, décrites au modèle ; vide si la lecture a échoué.
+	shoesBlock string
+	actions    []coachAction
 }
 
 func toolPayload(v any) string {
@@ -113,7 +115,7 @@ func goalCoachToolDefs() []oai.Tool {
 		),
 		oai.NewFunctionTool(
 			"reschedule_session",
-			"Reporte UNE séance précise à une autre date (report ponctuel).",
+			"Reporte UNE séance précise à une autre date (report ponctuel), aujourd'hui ou plus tard : une date passée est refusée.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -200,8 +202,10 @@ func goalCoachToolDefs() []oai.Tool {
 func (t *goalCoachTools) scheduleContext() string {
 	var b strings.Builder
 	today := t.now.In(t.loc)
+	tomorrow := today.AddDate(0, 0, 1)
 	fmt.Fprintf(&b, "- Aujourd'hui : %s %s (fuseau %s)\n",
 		weekdayNameOf(today), goalcalendar.DateKey(today), t.loc.String())
+	fmt.Fprintf(&b, "- Demain : %s %s\n", weekdayNameOf(tomorrow), goalcalendar.DateKey(tomorrow))
 	offsets := goalcalendar.EffectiveDayOffsets(t.goal)
 	fmt.Fprintf(&b, "- Jours des séances chaque semaine : %s\n", offsetsLabel(offsets))
 
@@ -211,8 +215,8 @@ func (t *goalCoachTools) scheduleContext() string {
 	if recent := goalcalendar.RecentSessions(sched, today, t.loc, 3); len(recent) > 0 {
 		b.WriteString("- Séances passées récentes :\n")
 		for _, s := range recent {
-			fmt.Fprintf(&b, "  - semaine %d séance %d — %s %s\n",
-				s.Week, s.Session, weekdayNameOf(s.Date), goalcalendar.DateKey(s.Date))
+			fmt.Fprintf(&b, "  - semaine %d séance %d — %s %s%s\n",
+				s.Week, s.Session, weekdayNameOf(s.Date), goalcalendar.DateKey(s.Date), t.sessionContent(s.Week, s.Session))
 		}
 	}
 
@@ -224,6 +228,13 @@ func (t *goalCoachTools) scheduleContext() string {
 		for _, s := range upcoming {
 			line := fmt.Sprintf("  - semaine %d séance %d — %s %s",
 				s.Week, s.Session, weekdayNameOf(s.Date), goalcalendar.DateKey(s.Date))
+			line += t.sessionContent(s.Week, s.Session)
+			switch goalcalendar.DateKey(s.Date) {
+			case goalcalendar.DateKey(today):
+				line += " — AUJOURD'HUI"
+			case goalcalendar.DateKey(tomorrow):
+				line += " — demain"
+			}
 			if s.Moved {
 				line += fmt.Sprintf(" (reportée depuis le %s", goalcalendar.DateKey(s.PlannedDate))
 				if s.Reason != "" {
@@ -256,6 +267,24 @@ func (t *goalCoachTools) scheduleContext() string {
 		fmt.Fprintf(&b, "- Séances annulées : %s\n", strings.Join(skipped, ", "))
 	}
 	return b.String()
+}
+
+// sessionContent : le contenu prévu d'une séance, pour que le coach la nomme juste
+// (« la sortie longue ») et choisisse la paire qui va avec, sans le deviner.
+func (t *goalCoachTools) sessionContent(week, session int) string {
+	for _, p := range t.goal.PlannedSessions {
+		if p.Week != week || p.Session != session {
+			continue
+		}
+		summary := strings.TrimSpace(p.Summary)
+		switch {
+		case summary != "":
+			return " : " + summary
+		case p.DistanceKm > 0:
+			return fmt.Sprintf(" : %.1f km", p.DistanceKm)
+		}
+	}
+	return ""
 }
 
 func (t *goalCoachTools) record(tool, label string) {
@@ -510,6 +539,18 @@ func (t *goalCoachTools) upsertOverride(o models.SessionOverride) {
 	t.goal.SessionOverrides = append(t.goal.SessionOverrides, o)
 }
 
+// checkRescheduleDate refuse un report dans le passé. Le modèle se trompe parfois
+// de jour (il se fie à un vieux « aujourd'hui » de la discussion) : le rappel de la
+// date réelle dans l'erreur lui permet de corriger son appel au tour suivant.
+func (t *goalCoachTools) checkRescheduleDate(day time.Time) error {
+	today := goalcalendar.MidnightIn(t.now, t.loc)
+	if day.Before(today) {
+		return fmt.Errorf("le %s %s est passé : nous sommes le %s %s, choisis aujourd'hui ou un jour suivant",
+			weekdayNameOf(day), goalcalendar.DateKey(day), weekdayNameOf(today), goalcalendar.DateKey(today))
+	}
+	return nil
+}
+
 func (t *goalCoachTools) rescheduleSession(ctx context.Context, args map[string]any) string {
 	week, okW := argInt(args, "week")
 	session, okS := argInt(args, "session")
@@ -519,6 +560,9 @@ func (t *goalCoachTools) rescheduleSession(ctx context.Context, args map[string]
 	day, okDate := goalcalendar.ParseDateKey(argString(args, "date"), t.loc)
 	if !okDate {
 		return toolFailure("date attendue au format AAAA-MM-JJ")
+	}
+	if err := t.checkRescheduleDate(day); err != nil {
+		return toolFailure(err.Error())
 	}
 	prev, found := t.findSession(week, session)
 	if !found {

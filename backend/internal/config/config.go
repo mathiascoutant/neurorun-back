@@ -34,6 +34,9 @@ type Config struct {
 	CORSAllowed        []string
 	OpenAIAPIKey       string
 	OpenAIModel        string
+	// OpenAICoachModel : modèle des conversations (chat et coach d'objectif), plus
+	// exigeantes que les textes générés d'un bloc.
+	OpenAICoachModel string
 	// Anthropic : modélisation 3D de la boutique. Sans clé, cette seule fonction est désactivée.
 	AnthropicAPIKey  string
 	Anthropic3DModel string
@@ -109,6 +112,7 @@ func Load() (*Config, error) {
 		FrontendURL:        frontend,
 		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:        getenv("OPENAI_MODEL", "gpt-4o"),
+		OpenAICoachModel:   getenv("OPENAI_COACH_MODEL", "gpt-5.5"),
 		AnthropicAPIKey:    strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
 		Anthropic3DModel:   getenv("ANTHROPIC_3D_MODEL", "claude-opus-5-5"),
 		AdminEmail:         strings.TrimSpace(strings.ToLower(os.Getenv("ADMIN_EMAIL"))),

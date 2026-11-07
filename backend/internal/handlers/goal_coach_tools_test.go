@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -135,5 +136,62 @@ func TestPinPastSessionsPreservesExistingOverrides(t *testing.T) {
 func TestOffsetsLabel(t *testing.T) {
 	if got := offsetsLabel([]int{1, 3, 5}); got != "mardi, jeudi, samedi" {
 		t.Fatalf("libellé inattendu : %q", got)
+	}
+}
+
+// Le cas remonté : « reporte ma séance d'aujourd'hui à demain » un vendredi, et le
+// modèle, resté sur un vieux « aujourd'hui, mercredi » de la discussion, vise la veille.
+func TestRescheduleRefusesPastDate(t *testing.T) {
+	tools := coachToolsFixture(time.Date(2026, 8, 21, 13, 15, 0, 0, time.UTC))
+	err := tools.checkRescheduleDate(time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("un report à la veille devrait être refusé")
+	}
+	if !strings.Contains(err.Error(), "vendredi 2026-08-21") {
+		t.Fatalf("l'erreur doit rappeler la date du jour : %v", err)
+	}
+	for _, d := range []int{21, 22} {
+		if err := tools.checkRescheduleDate(time.Date(2026, 8, d, 0, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("report au %d refusé : %v", d, err)
+		}
+	}
+}
+
+func TestScheduleContextFlagsTodaySession(t *testing.T) {
+	tools := coachToolsFixture(time.Date(2026, 8, 21, 13, 15, 0, 0, time.UTC))
+	ctx := tools.scheduleContext()
+	if !strings.Contains(ctx, "- Demain : samedi 2026-08-22") {
+		t.Fatalf("demain absent du contexte :\n%s", ctx)
+	}
+	if !strings.Contains(ctx, "semaine 2 séance 3 — vendredi 2026-08-21 — AUJOURD'HUI") {
+		t.Fatalf("la séance du jour n'est pas signalée :\n%s", ctx)
+	}
+	tools.goal.PlannedSessions = []models.PlannedSession{{Week: 2, Session: 3, DistanceKm: 18, Summary: "Sortie longue 18 km avec 600 m D+."}}
+	if ctx := tools.scheduleContext(); !strings.Contains(ctx, "vendredi 2026-08-21 : Sortie longue 18 km avec 600 m D+. — AUJOURD'HUI") {
+		t.Fatalf("la séance du jour n'est pas signalée :\n%s", ctx)
+	}
+}
+
+func TestCoachHistoryMessagesDatesEachDay(t *testing.T) {
+	wed := time.Date(2026, 8, 19, 21, 5, 0, 0, time.UTC)
+	hist := []models.ChatTurn{
+		{Role: "user", Text: "Aujourd'hui j'ai fait le fractionné", CreatedAt: wed},
+		{Role: "assistant", Text: "Bravo pour aujourd'hui, mercredi 2026-08-19.", CreatedAt: wed},
+	}
+	msgs := coachHistoryMessages(hist, "Reporte ma séance d'aujourd'hui à demain",
+		time.Date(2026, 8, 21, 13, 15, 0, 0, time.UTC), time.UTC)
+
+	if len(msgs) != 5 {
+		t.Fatalf("attendu repère + 2 messages + repère + message, obtenu %d", len(msgs))
+	}
+	if msgs[0].Role != "system" || !strings.Contains(msgs[0].Content, "mercredi 2026-08-19") {
+		t.Fatalf("l'ancienne journée n'est pas datée : %+v", msgs[0])
+	}
+	if msgs[3].Role != "system" || !strings.Contains(msgs[3].Content, "vendredi 2026-08-21") ||
+		!strings.Contains(msgs[3].Content, "samedi 2026-08-22") {
+		t.Fatalf("le nouveau message n'est pas daté : %+v", msgs[3])
+	}
+	if msgs[4].Role != "user" || msgs[4].Content != "Reporte ma séance d'aujourd'hui à demain" {
+		t.Fatalf("le message courant doit venir en dernier : %+v", msgs[4])
 	}
 }
