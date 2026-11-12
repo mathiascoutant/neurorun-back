@@ -99,9 +99,11 @@ const (
 	consensusMax = 3
 	consensusTau = 0.01
 
-	// Une course déclarée dont la distance GPS tombe à ±3 % d'une distance officielle
-	// est ramenée à cette distance : le GPS mesure la trajectoire du coureur, pas le
-	// parcours étalonné, et c'est le chrono officiel qui compte.
+	// Une course déclarée dont la distance GPS dépasse de 3 % au plus une distance
+	// officielle est ramenée à cette distance : le GPS mesure la trajectoire du coureur
+	// (virages pris large, zigzags), pas le parcours étalonné, et c'est le chrono
+	// officiel qui compte. Une mesure plus COURTE que la distance officielle signe en
+	// revanche un parcours trop court : la recaler offrirait des mètres jamais courus.
 	raceSnapTol = 0.03
 
 	// FC visée : celle des meilleures performances de la bande directe (5 au plus,
@@ -356,10 +358,12 @@ func IsRaceName(name string) bool {
 	return raceNamePattern.MatchString(n)
 }
 
-// snapRaceDistance recale une course déclarée sur la distance officielle la plus proche.
+// snapRaceDistance recale une course déclarée sur la distance officielle juste en
+// dessous, si le GPS ne la dépasse que de raceSnapTol. Jamais vers le haut : un
+// 9,84 km reste un 9,84 km, pas un 10 km couru dans le même temps.
 func snapRaceDistance(km float64) float64 {
 	for _, off := range officialRaceKm {
-		if math.Abs(km/off-1) <= raceSnapTol {
+		if km >= off && km/off-1 <= raceSnapTol {
 			return off
 		}
 	}

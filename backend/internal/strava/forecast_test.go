@@ -229,6 +229,18 @@ func TestRaceDistanceSnappedToOfficial(t *testing.T) {
 	}
 }
 
+func TestShortRaceNotStretchedToOfficial(t *testing.T) {
+	// « 10 km » mesuré 9,84 km en 36:52 : parcours trop court. Le recaler à 10 km
+	// annoncerait 36:52 sur 10 km ; l'équivalent réel tourne autour de 37:30.
+	race := mkRace(10, 9.84, 2212.0/60/9.84)
+	l := legByID(buildRaceForecastAt([]RunActivity{race}, refNow), "10k")
+	want := 2212 * math.Pow(10/9.84, riegelPower)
+	assertTime(t, "10 km (parcours court)", l.TimeSec, want, 1)
+	if l.Ref == nil || math.Abs(l.Ref.DistanceKm-9.84) > 0.005 {
+		t.Fatalf("la référence doit garder la distance mesurée, got %+v", l.Ref)
+	}
+}
+
 func TestTreadmillOnlyWithoutOutdoorEvidence(t *testing.T) {
 	tm := mkRun(5, 5, 3.6) // capteur de foulée mal étalonné
 	tm.Trainer = true
