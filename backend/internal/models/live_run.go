@@ -72,6 +72,22 @@ type RunScore struct {
 	Weather *weather.Conditions `bson:"weather,omitempty" json:"weather,omitempty"`
 }
 
+// LiveRunLeaderboard : ce qu'une course apporte au classement. Calculé une fois à
+// l'enregistrement : ni un nouveau barème de note ni une note recalculée plus tard
+// ne le changent, pour que le classement ne saute pas d'un coup.
+type LiveRunLeaderboard struct {
+	Points float64 `bson:"points" json:"points"`
+	// Counted : faux quand un garde-fou écarte la course (Reason dit lequel).
+	Counted bool    `bson:"counted" json:"counted"`
+	Reason  string  `bson:"reason,omitempty" json:"reason,omitempty"`
+	Km      float64 `bson:"km" json:"km"`
+	// Note : note sur 100 au moment du calcul ; absente pour une course non notée.
+	// Elle sert à la note moyenne de la fiche coureur.
+	Note *int `bson:"note,omitempty" json:"note,omitempty"`
+	// At : départ de la course, qui décide de sa saison.
+	At time.Time `bson:"at" json:"at"`
+}
+
 // Types de course choisis au départ, sur le téléphone ou à la montre. Ils
 // décident de la façon dont la course est notée et affichée.
 const (
@@ -138,7 +154,9 @@ type LiveRun struct {
 	ClientStats        *LiveRunClientStats `bson:"client_stats,omitempty" json:"client_stats,omitempty"`
 	Splits             []LiveRunSplit      `bson:"splits" json:"splits"`
 	Score              *RunScore           `bson:"score,omitempty" json:"score,omitempty"`
-	TrackPoints        []LiveRunTrackPoint `bson:"track_points,omitempty" json:"track_points,omitempty"`
+	// Leaderboard : points du classement, figés à l'enregistrement.
+	Leaderboard *LiveRunLeaderboard `bson:"leaderboard,omitempty" json:"leaderboard,omitempty"`
+	TrackPoints []LiveRunTrackPoint `bson:"track_points,omitempty" json:"track_points,omitempty"`
 
 	ClientVersion     string `bson:"client_version,omitempty" json:"client_version,omitempty"`
 	UserAgent         string `bson:"user_agent,omitempty" json:"user_agent,omitempty"`

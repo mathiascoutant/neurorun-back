@@ -109,6 +109,13 @@ type User struct {
 	// BetaAccess : compte invité à l’avant-première (admin → Avant-première). Sans effet tant
 	// que le verrou n’est pas activé ; seul comptera alors ce drapeau.
 	BetaAccess bool `bson:"beta_access,omitempty" json:"beta_access"`
+	// Country : code ISO à deux lettres (« FR »), pour les classements Europe et pays.
+	// Vide sur les comptes créés avant les classements : l'app le demande à
+	// l'ouverture, et d'ici là le compte n'apparaît qu'au classement Monde.
+	Country string `bson:"country,omitempty" json:"country,omitempty"`
+	// LeaderboardHidden : le coureur s'est retiré des classements. Il les consulte
+	// toujours, mais n'y figure plus.
+	LeaderboardHidden bool `bson:"leaderboard_hidden,omitempty" json:"leaderboard_hidden"`
 }
 
 func (u *User) EffectiveRole() string {

@@ -18,6 +18,7 @@ import (
 	"runapp/internal/auth"
 	"runapp/internal/config"
 	"runapp/internal/goalcalendar"
+	"runapp/internal/leaderboard"
 	"runapp/internal/models"
 	oai "runapp/internal/openai"
 	"runapp/internal/push"
@@ -54,6 +55,9 @@ type Handlers struct {
 	offerMu     sync.RWMutex
 	offerCache  *models.OfferConfig
 	offerExpiry time.Time
+
+	// leaderboardCache : classements complets par période (voir leaderboard.go).
+	leaderboardCache leaderboardCache
 
 	betaMu     sync.RWMutex
 	betaCache  *models.BetaConfig
@@ -108,6 +112,9 @@ type regBody struct {
 	LastName  string `json:"last_name"`
 	BirthDate string `json:"birth_date"`
 	Gender    string `json:"gender"`
+	// Country : code ISO du pays, pour les classements. Facultatif ici : les versions
+	// de l'app antérieures aux classements ne l'envoient pas.
+	Country string `json:"country"`
 	// IntendedPlan : offre payante visée par le parcours (« strava », « performance »), envoyée
 	// par le front quand l’inscription mène au récap de paiement. Purement indicatif : le compte
 	// est créé en standard et n’ouvre aucun droit — le champ ne sert qu’à retarder la notification
@@ -169,6 +176,12 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	country, ok := optionalCountry(b.Country)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "pays invalide"})
+		return
+	}
+
 	// Avant-première : on refuse avant de créer quoi que ce soit. Un compte créé puis bloqué à
 	// la connexion serait un compte fantôme de plus dans les statistiques.
 	if msg := h.betaLock(r.Context(), nil); msg != "" {
@@ -189,6 +202,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		LastName:     b.LastName,
 		BirthDate:    b.BirthDate,
 		Gender:       g,
+		Country:      country,
 	})
 	if errors.Is(err, store.ErrDuplicateEmail) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "email déjà utilisé"})
@@ -229,6 +243,7 @@ type registerPaidBody struct {
 	LastName      string `json:"last_name"`
 	BirthDate     string `json:"birth_date"`
 	Gender        string `json:"gender"`
+	Country       string `json:"country"`
 	Plan          string `json:"plan"`
 	PromoCode     string `json:"promo_code"`
 	PaymentMethod string `json:"payment_method"`
@@ -296,6 +311,12 @@ func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	country, ok := optionalCountry(b.Country)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "pays invalide"})
+		return
+	}
+
 	b.Plan = strings.TrimSpace(strings.ToLower(b.Plan))
 	if b.Plan != models.PlanStrava && b.Plan != models.PlanPerformance {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan payant invalide"})
@@ -336,6 +357,7 @@ func (h *Handlers) RegisterPaidSignup(w http.ResponseWriter, r *http.Request) {
 		LastName:     b.LastName,
 		BirthDate:    b.BirthDate,
 		Gender:       g,
+		Country:      country,
 		InitialPlan:  b.Plan,
 	})
 	if errors.Is(err, store.ErrDuplicateEmail) {
@@ -471,6 +493,9 @@ func userPublic(u *models.User, capabilities map[string]bool) map[string]any {
 		"role":          u.EffectiveRole(),
 		"plan":          u.EffectivePlan(),
 		"beta_access":   u.BetaAccess,
+		"country":       u.Country,
+		// leaderboard_hidden : retiré des classements depuis le profil.
+		"leaderboard_hidden": u.LeaderboardHidden,
 	}
 	if capabilities != nil {
 		m["capabilities"] = capabilities
@@ -479,6 +504,15 @@ func userPublic(u *models.User, capabilities map[string]bool) map[string]any {
 }
 
 func stringPtr(s string) *string { return &s }
+
+// optionalCountry : vide reste vide (ancienne version de l'app), sinon le code doit
+// exister.
+func optionalCountry(code string) (string, bool) {
+	if strings.TrimSpace(code) == "" {
+		return "", true
+	}
+	return leaderboard.NormalizeCountry(code)
+}
 
 func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	u := r.Context().Value(ctxUser{}).(*models.User)
@@ -508,6 +542,16 @@ type patchMeBody struct {
 	Gender          string `json:"gender"`
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
+	// Country et LeaderboardHidden : facultatifs, et envoyables seuls (pop-up du
+	// pays, interrupteur du profil) sans renvoyer tout le profil.
+	Country           *string `json:"country"`
+	LeaderboardHidden *bool   `json:"leaderboard_hidden"`
+}
+
+// profileFieldsSent : le corps porte le profil lui-même, et pas seulement le pays
+// ou le retrait des classements.
+func (b patchMeBody) profileFieldsSent() bool {
+	return b.FirstName != "" || b.LastName != "" || b.BirthDate != "" || b.Gender != "" || b.NewPassword != ""
 }
 
 func validateProfileFields(firstName, lastName, birthDate string, gender string) (string, string, string, string, string) {
@@ -556,14 +600,33 @@ func (h *Handlers) PatchMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json invalide"})
 		return
 	}
-	fn, ln, bd, g, vErr := validateProfileFields(b.FirstName, b.LastName, b.BirthDate, b.Gender)
-	if vErr != "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": vErr})
-		return
+	onlyLeaderboard := !b.profileFieldsSent() && (b.Country != nil || b.LeaderboardHidden != nil)
+	var country *string
+	if b.Country != nil {
+		c, ok := leaderboard.NormalizeCountry(*b.Country)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "pays invalide"})
+			return
+		}
+		country = &c
 	}
-	if err := h.db.UpdateUserProfile(r.Context(), u.ID, fn, ln, bd, g); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
-		return
+	if !onlyLeaderboard {
+		fn, ln, bd, g, vErr := validateProfileFields(b.FirstName, b.LastName, b.BirthDate, b.Gender)
+		if vErr != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": vErr})
+			return
+		}
+		if err := h.db.UpdateUserProfile(r.Context(), u.ID, fn, ln, bd, g); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
+			return
+		}
+	}
+	if country != nil || b.LeaderboardHidden != nil {
+		if err := h.db.UpdateUserLeaderboard(r.Context(), u.ID, country, b.LeaderboardHidden); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mise à jour impossible"})
+			return
+		}
+		h.leaderboardCache.clear()
 	}
 	newPwd := strings.TrimSpace(b.NewPassword)
 	if newPwd != "" {
@@ -1780,6 +1843,9 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/boost/feed", h.BoostFeed)
 		pr.Get("/boost/received", h.BoostsReceived)
 		pr.Get("/boost/leaderboard", h.BoostLeaderboard)
+		// Classements Monde / Europe / pays, par saison mensuelle ou depuis toujours.
+		pr.Get("/leaderboard", h.Leaderboard)
+		pr.Get("/leaderboard/users/{id}", h.LeaderboardRunner)
 		pr.Post("/live-runs/{id}/boost", h.BoostRun)
 		pr.Post("/live-sessions", h.StartLiveSession)
 		pr.Post("/live-sessions/{id}/end", h.EndLiveSession)

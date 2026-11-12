@@ -55,6 +55,8 @@ func main() {
 	nudgeCtx, stopNudges := context.WithCancel(context.Background())
 	defer stopNudges()
 	go h.RunCoachNudges(nudgeCtx)
+	// Classement : points des courses enregistrées avant son arrivée. Idempotent.
+	go h.BackfillLeaderboard(nudgeCtx)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)

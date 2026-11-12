@@ -173,6 +173,8 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 	// Note sur 100, calculée avec la VMA en vigueur maintenant et figée avec la
 	// course : elle juge l'exécution du jour. Sans test de VMA, pas de note.
 	run.Score = h.scoreLiveRun(r.Context(), u, &run)
+	// Points du classement, figés maintenant avec la note du jour.
+	run.Leaderboard = liveRunLeaderboard(&run)
 	run.ShoeID = h.defaultShoeFor(r.Context(), u.ID)
 	run.GoalSession = h.goalSessionFor(r.Context(), u.ID, b.GoalSession, goalcalendar.LiveRunStart(run))
 
@@ -203,6 +205,10 @@ func (h *Handlers) CreateLiveRun(w http.ResponseWriter, r *http.Request) {
 		// Pas de note : l'app propose le test de VMA sur l'écran de fin.
 		resp["needs_vma_test"] = !h.userHasVmaTest(r.Context(), u.ID)
 	}
+	// Points gagnés, pour l'écran de fin ; le classement les montre aussitôt.
+	resp["leaderboard_points"] = run.Leaderboard.Points
+	resp["leaderboard_counted"] = run.Leaderboard.Counted
+	h.leaderboardCache.clear()
 	// Uniquement ici, sur une vraie création : un réessai de la montre (duplicate)
 	// ressort plus haut et ne renotifie ni les amis, ni le coureur.
 	h.notifyFriendsOfRun(u, &run)

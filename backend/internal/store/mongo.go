@@ -161,6 +161,10 @@ func Connect(uri, dbName string, o ConnectOptions) (*DB, error) {
 	_, _ = liveRuns.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
 	})
+	// Classements : agrégation des points par saison.
+	_, _ = liveRuns.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "leaderboard.counted", Value: 1}, {Key: "leaderboard.at", Value: 1}, {Key: "user_id", Value: 1}},
+	})
 	// Idempotence des envois montre : un même client_run_id ne peut être
 	// enregistré qu'une fois par utilisateur. Partiel, car les courses créées
 	// depuis le web n'en portent pas.
@@ -321,6 +325,7 @@ type CreateUserInput struct {
 	LastName     string
 	BirthDate    string // YYYY-MM-DD
 	Gender       string
+	Country      string // ISO, vide si l'app ne l'envoie pas
 	// InitialPlan : vide ou standard → PlanStandard ; strava | performance pour inscription payante.
 	InitialPlan string
 }
@@ -339,6 +344,7 @@ func (d *DB) CreateUser(ctx context.Context, in CreateUserInput) (*models.User, 
 		LastName:     in.LastName,
 		BirthDate:    in.BirthDate,
 		Gender:       in.Gender,
+		Country:      in.Country,
 		Role:         models.RoleUser,
 		Plan:         plan,
 		CreatedAt:    now,
@@ -845,6 +851,28 @@ func (d *DB) UpdateUserProfile(ctx context.Context, id primitive.ObjectID, first
 		"birth_date": birthDate,
 		"gender":     gender,
 	}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateUserLeaderboard : pays et/ou retrait des classements ; nil = inchangé.
+func (d *DB) UpdateUserLeaderboard(ctx context.Context, id primitive.ObjectID, country *string, hidden *bool) error {
+	set := bson.M{}
+	if country != nil {
+		set["country"] = *country
+	}
+	if hidden != nil {
+		set["leaderboard_hidden"] = *hidden
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	res, err := d.users.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": set})
 	if err != nil {
 		return err
 	}
