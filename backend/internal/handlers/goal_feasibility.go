@@ -79,6 +79,8 @@ type FeasibilityFacts struct {
 	AllowedPct   float64         `json:"allowed_pct"`
 	Reference    *FeasibilityRun `json:"reference_run,omitempty"`
 	LongestRunKm float64         `json:"longest_run_km"`
+	// LongestRecent : la plus longue sortie des trois derniers mois, repère d'endurance.
+	LongestRecent *FeasibilityRun `json:"longest_recent,omitempty"`
 	// LongestEver : la plus longue sortie des deux dernières années, quand elle
 	// dépasse la plus longue récente. Avoir déjà couru la distance compte, même
 	// si la forme d'alors n'est plus celle d'aujourd'hui.
@@ -259,7 +261,7 @@ func assessFeasibilityAt(
 	}
 	recentFrom := now.AddDate(0, 0, -feasibilityRecentDays)
 	historyFrom := now.AddDate(0, 0, -feasibilityHistoryDays)
-	var longestEver *FeasibilityRun
+	var longestEver, longestRecentRun *FeasibilityRun
 	monthFrom := now.AddDate(0, 0, -28)
 	var all []candidate
 	var kmLast28, longestRecent, longestAny float64
@@ -302,6 +304,7 @@ func assessFeasibilityAt(
 			f.RecentRuns++
 			if km > longestRecent {
 				longestRecent = km
+				longestRecentRun = &FeasibilityRun{Name: name, Date: date, DistanceKm: km, TimeSec: math.Round(min * 60)}
 			}
 		}
 		implied := (km / (min / 60)) / vma.FractionOfVma(km)
@@ -326,8 +329,10 @@ func assessFeasibilityAt(
 	}
 	runs := all
 	f.LongestRunKm = longestRecent
+	f.LongestRecent = longestRecentRun
 	if stale {
 		f.LongestRunKm = longestAny
+		f.LongestRecent = longestEver
 	} else if longestEver != nil && longestAny > longestRecent {
 		f.LongestEver = longestEver
 	}
@@ -395,6 +400,10 @@ func assessFeasibilityAt(
 			f.Reliability = ReliabilityLow
 			if ref.run != nil && !ref.recent {
 				f.ReliabilityWhy = fmt.Sprintf("ta sortie la plus probante (%s) date du %s", kmFR(ref.run.DistanceKm), frDay(ref.run.Date))
+			} else if f.LongestRunKm > 0 && f.LongestRunKm < goalKm {
+				// Ce qui manque pour juger, c'est une sortie proche de la distance : on
+				// cite donc la plus longue, pas la plus rapide.
+				f.ReliabilityWhy = fmt.Sprintf("ta plus longue sortie récente fait %s, loin des %s de la course", kmFR(f.LongestRunKm), kmFR(goalKm))
 			} else if ref.run != nil {
 				f.ReliabilityWhy = fmt.Sprintf("ta sortie la plus probante fait %s, loin des %s de la course", kmFR(ref.run.DistanceKm), kmFR(goalKm))
 			} else {
@@ -404,6 +413,8 @@ func assessFeasibilityAt(
 			f.Reliability = ReliabilityMedium
 			if f.RecentRuns < 4 {
 				f.ReliabilityWhy = fmt.Sprintf("elle repose sur %d sortie(s) récente(s) seulement", f.RecentRuns)
+			} else if f.LongestRunKm > 0 && f.LongestRunKm < goalKm {
+				f.ReliabilityWhy = fmt.Sprintf("ta plus longue sortie récente fait %s pour une course de %s", kmFR(f.LongestRunKm), kmFR(goalKm))
 			} else if ref.run != nil {
 				f.ReliabilityWhy = fmt.Sprintf("ta sortie la plus probante fait %s pour une course de %s", kmFR(ref.run.DistanceKm), kmFR(goalKm))
 			} else {
@@ -543,9 +554,13 @@ func factsForPrompt(f FeasibilityFacts) string {
 		fmt.Fprintf(&b, "- Fiabilité de cette estimation : %s — %s.\n", f.Reliability, f.ReliabilityWhy)
 	}
 	if f.Reference != nil {
-		fmt.Fprintf(&b, "- Sortie la plus probante : %s en %s (%s), le %s.\n",
+		fmt.Fprintf(&b, "- Repère de vitesse (la sortie qui en dit le plus sur l'allure tenable) : %s en %s (%s), le %s.\n",
 			kmFR(f.Reference.DistanceKm), formatDuration(f.Reference.TimeSec),
 			formatPace(f.Reference.TimeSec/f.Reference.DistanceKm), frDay(f.Reference.Date))
+	}
+	if lr := f.LongestRecent; lr != nil && (f.Reference == nil || lr.DistanceKm > f.Reference.DistanceKm) {
+		fmt.Fprintf(&b, "- Repère d'endurance (la plus longue sortie récente) : %s en %s (%s), le %s. Courue à une allure plus tranquille que le repère de vitesse, elle ne resserre pas la fourchette, mais elle compte : cite-la.\n",
+			kmFR(lr.DistanceKm), formatDuration(lr.TimeSec), formatPace(lr.TimeSec/lr.DistanceKm), frDay(lr.Date))
 	}
 	if f.VmaKmh > 0 {
 		fmt.Fprintf(&b, "- VMA mesurée au test de l'app : %s km/h.\n", strings.Replace(strconv.FormatFloat(f.VmaKmh, 'f', 1, 64), ".", ",", 1))
@@ -559,7 +574,7 @@ func factsForPrompt(f FeasibilityFacts) string {
 	if f.Trail {
 		b.WriteString("- Course en trail : le dénivelé ralentit l'allure, la comparaison avec des sorties sur route est indicative.\n")
 	}
-	if f.LongestRunKm > 0 {
+	if f.LongestRunKm > 0 && (f.LongestRecent == nil || (f.Reference != nil && f.LongestRecent.DistanceKm <= f.Reference.DistanceKm)) {
 		fmt.Fprintf(&b, "- Plus longue sortie des trois derniers mois : %s.\n", kmFR(f.LongestRunKm))
 	}
 	if f.LongestEver != nil {

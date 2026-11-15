@@ -242,9 +242,38 @@ func TestAssessFeasibilityUsesLongRunsAndOldHalf(t *testing.T) {
 		t.Errorf("15 km pour juger un marathon ne donne pas une fiabilité « bonne »")
 	}
 	facts := factsForPrompt(f)
+	if !strings.Contains(f.ReliabilityWhy, "15,0 km") {
+		t.Errorf("la fiabilité doit citer la plus longue sortie récente : %q", f.ReliabilityWhy)
+	}
 	for _, want := range []string{"15,0 km", "deux dernières années : 21,1 km", "Tu as déjà couru 21,1 km"} {
 		if !strings.Contains(facts, want) {
 			t.Errorf("faits sans %q :\n%s", want, facts)
 		}
+	}
+}
+
+// Le cas vu en production : un 5 km rapide fixe la fourchette, mais c'est le 15 km,
+// plus long, qu'il faut citer pour dire pourquoi l'avis reste fragile.
+func TestAssessFeasibilityCitesLongestRunNotFastest(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	acts := []map[string]any{
+		sortieLe(5, 24.6, now.AddDate(0, 0, -20)),
+		sortieLe(15, 96, now.AddDate(0, 0, -12)), // 6:24/km, sortie tranquille
+		sortieLe(8, 50, now.AddDate(0, 0, -5)),
+		sortieLe(7, 44, now.AddDate(0, 0, -30)),
+	}
+	f := assessFeasibilityAt(acts, nil, 42, "4h30", 16, 4, false, now)
+	if f.Reference == nil || f.Reference.DistanceKm != 5 {
+		t.Fatalf("repère de vitesse : %+v, attendu le 5 km", f.Reference)
+	}
+	if f.LongestRecent == nil || f.LongestRecent.DistanceKm != 15 {
+		t.Fatalf("repère d'endurance : %+v, attendu le 15 km", f.LongestRecent)
+	}
+	if !strings.HasPrefix(f.ReliabilityWhy, "ta plus longue sortie récente fait 15,0 km") {
+		t.Errorf("raison de la fiabilité : %q", f.ReliabilityWhy)
+	}
+	facts := factsForPrompt(f)
+	if !strings.Contains(facts, "Repère de vitesse") || !strings.Contains(facts, "Repère d'endurance") {
+		t.Errorf("les deux repères doivent être dits :\n%s", facts)
 	}
 }
