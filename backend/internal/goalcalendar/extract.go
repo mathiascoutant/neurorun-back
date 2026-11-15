@@ -39,7 +39,7 @@ Chaque élément du tableau a exactement les clés :
 - "session" : entier 1..S (ordre Séance 1, 2… dans la semaine)
 - "distance_km" : nombre décimal = distance totale **minimum** à couvrir sur Strava ce jour (échauff + corps + retour). Pour une sortie « 6 km facile », mets 6.
 - "pace_sec_per_km" : nombre (secondes pour parcourir 1 km en allure moyenne **cible pour toute la sortie**) ou null si le plan ne permet pas de l’estimer sans ambiguïté.
-- "summary" : courte phrase qui dit ce qu'est la séance (ex. « Fractionné 6x400 m », « Sortie longue en endurance »).
+- "summary" : courte phrase qui dit ce qu'est la séance (ex. « Fractionné 6x400 m », « Sortie longue en endurance »). Pas de distance de sortie dedans : distance_km est affichée à côté, et un « Footing de 5 km » posé à côté de 7 km au total se contredit. Seules les répétitions d'un fractionné y ont leur place.
 - "kind" : la nature de la séance, un seul mot parmi "easy" (footing, endurance), "long" (sortie longue), "interval" (fractionné, répétitions), "tempo" (seuil, allure course), "hills" (côtes), "recovery" (récupération).
 
 Le tableau doit contenir **exactement** W×S entrées, dans l’ordre : semaine 1 sessions 1..S, semaine 2… jusqu’à la semaine W.`

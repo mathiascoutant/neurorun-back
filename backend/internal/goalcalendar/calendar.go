@@ -109,6 +109,9 @@ func BuildCalendarItems(
 		if ps.Summary == "" {
 			ps.Summary = fmt.Sprintf("Sem.%d séance %d (~%.1f km)", w, s, ps.DistanceKm)
 		}
+		if ps.RaceID == "" {
+			ps.Summary = SummaryForDistance(ps.Summary, ps.DistanceKm)
+		}
 
 		item := CalendarItem{
 			Week:               w,

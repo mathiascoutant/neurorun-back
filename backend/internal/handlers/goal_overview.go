@@ -148,7 +148,11 @@ func (h *Handlers) insightFacts(
 		fmt.Fprintf(&b, "Assiduité : %d %%. Séances manquées sur les 14 derniers jours : %d.\n", p.AdherencePct, p.RecentMissed)
 	}
 	fmt.Fprintf(&b, "Volume couru : %s km pour %s km prévus à ce jour.\n", kmFR(p.KmDone), kmFR(p.KmPlannedSoFar))
-	fmt.Fprintf(&b, "Cette semaine : %d séance(s) faite(s) sur %d.\n", p.WeekDone, p.WeekTotal)
+	if p.WeekTotal > 0 {
+		fmt.Fprintf(&b, "Cette semaine : %d séance(s) faite(s) sur %d.\n", p.WeekDone, p.WeekTotal)
+	} else {
+		b.WriteString("Plus aucune séance prévue cette semaine.\n")
+	}
 
 	recent := 0
 	for i := len(items) - 1; i >= 0 && recent < 4; i-- {
@@ -176,6 +180,7 @@ func (h *Handlers) insightFacts(
 		fmt.Fprintf(&b, "Prochaine séance : %s, %s (%s km).\n", next.Date, truncateRunes(next.Summary, 80), kmFR(next.PlannedKm))
 	}
 	loc, _ := calendarLocation()
+	fmt.Fprintf(&b, "Objectif créé le %s : rien n'était prévu avant.\n", goalcalendar.DateKey(g.CreatedAt.In(loc)))
 	fmt.Fprintf(&b, "Aujourd'hui : %s.\n", goalcalendar.DateKey(time.Now().In(loc)))
 	if rb := raceBlock(g); rb != "" {
 		b.WriteString("\n" + rb)
@@ -252,7 +257,7 @@ func (h *Handlers) GoalSessionWorkout(w http.ResponseWriter, r *http.Request) {
 	resp := func(steps []models.WorkoutStep) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"week": week, "session": session,
-			"summary": ps.Summary, "kind": goalcalendar.SessionKind(*ps),
+			"summary": goalcalendar.SummaryForDistance(ps.Summary, ps.DistanceKm), "kind": goalcalendar.SessionKind(*ps),
 			"steps": steps,
 		})
 	}

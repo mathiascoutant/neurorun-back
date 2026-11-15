@@ -33,8 +33,11 @@ func dates(t *testing.T, sessions []ScheduledSession) map[string]string {
 func TestResolveScheduleDefaultPattern(t *testing.T) {
 	loc := time.UTC
 	got := dates(t, ResolveSchedule(testGoal(), loc))
+	if _, ok := got["1:1"]; ok {
+		t.Fatalf("la séance du lundi précède la création : elle ne doit pas exister, %v", got)
+	}
 	want := map[string]string{
-		"1:1": "2026-08-10", "1:2": "2026-08-12", "1:3": "2026-08-14",
+		"1:2": "2026-08-12", "1:3": "2026-08-14",
 		"2:1": "2026-08-17", "2:2": "2026-08-19", "2:3": "2026-08-21",
 		"3:1": "2026-08-24", "3:2": "2026-08-26", "3:3": "2026-08-28",
 	}
@@ -49,7 +52,7 @@ func TestResolveScheduleCustomOffsets(t *testing.T) {
 	g := testGoal()
 	g.CalendarDayOffsets = []int{1, 3, 5} // mardi, jeudi, samedi
 	got := dates(t, ResolveSchedule(g, time.UTC))
-	if got["1:1"] != "2026-08-11" || got["1:2"] != "2026-08-13" || got["1:3"] != "2026-08-15" {
+	if _, ok := got["1:1"]; ok || got["1:2"] != "2026-08-13" || got["1:3"] != "2026-08-15" {
 		t.Fatalf("motif personnalisé non appliqué : %v", got)
 	}
 }
@@ -187,5 +190,29 @@ func TestParseDateKeyRejectsGarbage(t *testing.T) {
 		if _, ok := ParseDateKey(in, time.UTC); ok {
 			t.Fatalf("date %q acceptée à tort", in)
 		}
+	}
+}
+
+// Objectif créé un dimanche : toute la semaine 1 est déjà derrière, aucune séance
+// ne doit y compter (ni manquée, ni annulée), sauf celle reportée après la création.
+func TestResolveScheduleDropsSessionsBeforeCreation(t *testing.T) {
+	g := testGoal()
+	g.CreatedAt = time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	g.SessionOverrides = []models.SessionOverride{
+		{Week: 1, Session: 2, Skipped: true},
+		{Week: 1, Session: 3, Date: "2026-08-16"},
+	}
+	got := dates(t, ResolveSchedule(g, time.UTC))
+	if _, ok := got["1:1"]; ok {
+		t.Fatalf("séance passée gardée : %v", got)
+	}
+	if _, ok := got["1:2"]; ok {
+		t.Fatalf("une annulation d'avant la création ne doit pas compter : %v", got)
+	}
+	if got["1:3"] != "2026-08-16" {
+		t.Fatalf("séance reportée au jour de la création perdue : %v", got)
+	}
+	if got["2:1"] != "2026-08-17" {
+		t.Fatalf("la semaine 2 ne doit pas bouger : %v", got)
 	}
 }

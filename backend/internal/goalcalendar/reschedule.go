@@ -120,6 +120,14 @@ func ResolveSchedule(g *models.Goal, loc *time.Location) []ScheduledSession {
 	}
 	ranges := blockedRanges(g.Unavailabilities, loc)
 
+	// La semaine 1 part du lundi de la création : les séances de ces jours-là,
+	// déjà passés quand l'objectif est né, n'ont jamais été proposées. Elles
+	// sortent du planning plutôt que de compter comme manquées (ou annulées).
+	var startDay time.Time
+	if !g.CreatedAt.IsZero() {
+		startDay = MidnightIn(g.CreatedAt, loc)
+	}
+
 	var fixed, floating []ScheduledSession
 	for w := 1; w <= g.Weeks; w++ {
 		for s := 1; s <= g.SessionsPerWeek; s++ {
@@ -132,11 +140,17 @@ func ResolveSchedule(g *models.Goal, loc *time.Location) []ScheduledSession {
 
 			o, hasOverride := overrides[overrideKey(w, s)]
 			if !hasOverride {
+				if planned.Before(startDay) {
+					continue
+				}
 				floating = append(floating, item)
 				continue
 			}
 			item.Reason = strings.TrimSpace(o.Reason)
 			if o.Skipped {
+				if planned.Before(startDay) {
+					continue
+				}
 				item.Skipped = true
 				item.Date = time.Time{}
 				fixed = append(fixed, item)
@@ -145,6 +159,10 @@ func ResolveSchedule(g *models.Goal, loc *time.Location) []ScheduledSession {
 			if d, ok := ParseDateKey(o.Date, loc); ok {
 				item.Date = d
 				item.Moved = !d.Equal(planned)
+			}
+			// Reportée après la création, elle redevient une vraie séance.
+			if item.Date.Before(startDay) {
+				continue
 			}
 			fixed = append(fixed, item)
 		}

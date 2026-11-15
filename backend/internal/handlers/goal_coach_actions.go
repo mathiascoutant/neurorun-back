@@ -37,7 +37,7 @@ func goalCoachContentToolDefs() []oai.Tool {
 				"properties": map[string]any{
 					"week":            map[string]any{"type": "integer", "description": "Numéro de semaine du plan."},
 					"session":         map[string]any{"type": "integer", "description": "Numéro de la séance dans la semaine."},
-					"summary":         map[string]any{"type": "string", "description": "Titre court de la séance (ex. « Footing 40 min », « Fractionné 5x800 m »)."},
+					"summary":         map[string]any{"type": "string", "description": "Titre court de la séance (ex. « Footing 40 min », « Fractionné 5x800 m »), sans distance totale : distance_km est affichée à côté."},
 					"detail":          map[string]any{"type": "string", "description": "Déroulé complet : échauffement, corps de séance avec allures en min/km et temps par répétition, récupérations, retour au calme."},
 					"distance_km":     map[string]any{"type": "number", "description": "Distance totale à couvrir, échauffement et retour au calme compris."},
 					"pace_sec_per_km": map[string]any{"type": "integer", "description": "Allure moyenne visée sur toute la sortie, en secondes par km. Omets pour un fractionné ou si elle n'a pas de sens."},
