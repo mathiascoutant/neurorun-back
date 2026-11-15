@@ -6,6 +6,48 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+// Natures de séance. Elles décident de la couleur et du pictogramme dans le
+// calendrier, et de ce que la montre fait toute seule (tours d'un fractionné).
+const (
+	SessionKindEasy     = "easy"     // footing, endurance fondamentale
+	SessionKindLong     = "long"     // sortie longue
+	SessionKindInterval = "interval" // fractionné
+	SessionKindTempo    = "tempo"    // seuil, allure spécifique
+	SessionKindHills    = "hills"    // côtes, dénivelé
+	SessionKindRecovery = "recovery" // récupération
+	SessionKindRace     = "race"     // course prévue pendant la prépa
+)
+
+// NormalizeSessionKind : nature connue, sinon vide (la séance s'affiche sans étiquette).
+func NormalizeSessionKind(k string) string {
+	switch k {
+	case SessionKindEasy, SessionKindLong, SessionKindInterval, SessionKindTempo,
+		SessionKindHills, SessionKindRecovery, SessionKindRace:
+		return k
+	default:
+		return ""
+	}
+}
+
+// Étapes d'une séance guidée.
+const (
+	StepWarmup   = "warmup"
+	StepRun      = "run"     // effort
+	StepRecover  = "recover" // récupération entre deux efforts
+	StepCooldown = "cooldown"
+)
+
+// WorkoutStep : une étape de séance, que la montre enchaîne toute seule. Elle se
+// termine à la distance OU à la durée indiquée (une seule des deux est renseignée).
+type WorkoutStep struct {
+	Kind         string   `bson:"kind" json:"kind"`
+	DistanceM    float64  `bson:"distance_m,omitempty" json:"distance_m,omitempty"`
+	DurationSec  float64  `bson:"duration_sec,omitempty" json:"duration_sec,omitempty"`
+	PaceSecPerKm *float64 `bson:"pace_sec_per_km,omitempty" json:"pace_sec_per_km,omitempty"`
+	// Label : ce que la montre affiche (« 400 m vite · 3/6 »).
+	Label string `bson:"label,omitempty" json:"label,omitempty"`
+}
+
 // PlannedSession est une séance du plan (distance mini sur Strava, allure cible optionnelle).
 type PlannedSession struct {
 	Week         int      `bson:"week" json:"week"`
@@ -13,14 +55,68 @@ type PlannedSession struct {
 	DistanceKm   float64  `bson:"distance_km" json:"distance_km"`
 	PaceSecPerKm *float64 `bson:"pace_sec_per_km,omitempty" json:"pace_sec_per_km,omitempty"`
 	Summary      string   `bson:"summary,omitempty" json:"summary,omitempty"`
+	// Kind : nature de la séance (SessionKind…). Vide sur les plans d'avant ce champ.
+	Kind string `bson:"kind,omitempty" json:"kind,omitempty"`
+	// Detail : déroulé complet, quand le coach a réécrit la séance. Il prime alors
+	// sur le texte du plan Markdown, qui décrit l'ancienne version.
+	Detail string `bson:"detail,omitempty" json:"detail,omitempty"`
+	// Edited : séance modifiée après la rédaction du plan (par le coach ou une course).
+	Edited bool `bson:"edited,omitempty" json:"edited,omitempty"`
+	// RaceID : la séance est une course prévue (Goal.Races).
+	RaceID string `bson:"race_id,omitempty" json:"race_id,omitempty"`
+	// Steps : étapes pour la montre, calculées à la première demande puis gardées.
+	// Effacées dès que le contenu de la séance change.
+	Steps []WorkoutStep `bson:"steps,omitempty" json:"steps,omitempty"`
+}
+
+// GoalRace : une course que la personne a prévue pendant sa préparation (un 10 km,
+// un semi avant le marathon). Elle prend la place d'une séance du plan.
+type GoalRace struct {
+	ID         string  `bson:"id" json:"id"`
+	Name       string  `bson:"name" json:"name"`
+	Date       string  `bson:"date" json:"date"` // AAAA-MM-JJ
+	DistanceKm float64 `bson:"distance_km" json:"distance_km"`
+	TargetTime string  `bson:"target_time,omitempty" json:"target_time,omitempty"`
+	// Official : épreuve avec dossard, par opposition à un défi personnel.
+	Official bool `bson:"official,omitempty" json:"official,omitempty"`
+	// Week / Session : la séance du plan que la course remplace.
+	Week    int `bson:"week" json:"week"`
+	Session int `bson:"session" json:"session"`
+	// Replaced : la séance d'origine, remise en place si la course est retirée.
+	Replaced *PlannedSession `bson:"replaced,omitempty" json:"-"`
+}
+
+// RaceInfo : ce qu'on sait de l'épreuve visée, quand c'est une course officielle.
+// Rempli par une recherche, donc à prendre comme une aide et non une source sûre.
+type RaceInfo struct {
+	Place string  `bson:"place,omitempty" json:"place,omitempty"`
+	Lat   float64 `bson:"lat,omitempty" json:"lat,omitempty"`
+	Lon   float64 `bson:"lon,omitempty" json:"lon,omitempty"`
+	// ElevationGainM : dénivelé positif annoncé, 0 si inconnu.
+	ElevationGainM float64 `bson:"elevation_gain_m,omitempty" json:"elevation_gain_m,omitempty"`
+	// Course : le parcours en quelques phrases (profil, revêtement, passages durs).
+	Course string `bson:"course,omitempty" json:"course,omitempty"`
+	URL    string `bson:"url,omitempty" json:"url,omitempty"`
+	// Climate : météo habituelle à cette date et cet endroit (moyennes des années passées).
+	Climate   *RaceClimate `bson:"climate,omitempty" json:"climate,omitempty"`
+	UpdatedAt time.Time    `bson:"updated_at,omitempty" json:"updated_at,omitempty"`
+}
+
+// RaceClimate : températures et pluie habituelles le jour de la course.
+type RaceClimate struct {
+	TempMinC float64 `bson:"temp_min_c" json:"temp_min_c"`
+	TempMaxC float64 `bson:"temp_max_c" json:"temp_max_c"`
+	// RainyDaysPct : part des années passées où il a plu ce jour-là (0–100).
+	RainyDaysPct float64 `bson:"rainy_days_pct" json:"rainy_days_pct"`
+	Years        int     `bson:"years" json:"years"`
 }
 
 // SessionOverride fixe le sort d'une séance précise, décidé avec le coach : date
 // imposée (report) ou annulation. Prime sur le motif hebdomadaire et sur le
 // décalage automatique lié à une indisponibilité.
 type SessionOverride struct {
-	Week    int    `bson:"week" json:"week"`
-	Session int    `bson:"session" json:"session"`
+	Week    int `bson:"week" json:"week"`
+	Session int `bson:"session" json:"session"`
 	// Date au format AAAA-MM-JJ (jour civil, fuseau du calendrier).
 	Date    string `bson:"date,omitempty" json:"date,omitempty"`
 	Skipped bool   `bson:"skipped,omitempty" json:"skipped,omitempty"`
@@ -54,34 +150,46 @@ func GoalTerrainLabel(terrain string) string {
 }
 
 type Goal struct {
-	ID               primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	UserID           primitive.ObjectID `bson:"user_id" json:"-"` // jamais exposé au client
-	DistanceKm       float64            `bson:"distance_km" json:"distance_km"`
-	DistanceLabel    string             `bson:"distance_label" json:"distance_label"`
+	ID            primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID        primitive.ObjectID `bson:"user_id" json:"-"` // jamais exposé au client
+	DistanceKm    float64            `bson:"distance_km" json:"distance_km"`
+	DistanceLabel string             `bson:"distance_label" json:"distance_label"`
 	// Terrain : "road" ou "trail". Absent sur les objectifs créés avant ce champ —
 	// passer par EffectiveTerrain plutôt que de lire la valeur brute.
-	Terrain          string             `bson:"terrain,omitempty" json:"terrain,omitempty"`
+	Terrain string `bson:"terrain,omitempty" json:"terrain,omitempty"`
 	// RaceDate : jour de la course au format AAAA-MM-JJ, quand la personne l'a indiqué
 	// plutôt qu'un nombre de semaines. C'est la vraie échéance : Weeks n'en est qu'une
 	// approximation arrondie à la semaine. Vide = échéance déduite de Weeks.
-	RaceDate         string             `bson:"race_date,omitempty" json:"race_date,omitempty"`
+	RaceDate string `bson:"race_date,omitempty" json:"race_date,omitempty"`
 	// CustomTitle : libellé choisi par l’utilisateur (affiché à la place de distance_label si non vide).
-	CustomTitle      string             `bson:"custom_title,omitempty" json:"custom_title,omitempty"`
-	Weeks            int                `bson:"weeks" json:"weeks"`
-	SessionsPerWeek  int                `bson:"sessions_per_week" json:"sessions_per_week"`
-	TargetTime       string             `bson:"target_time,omitempty" json:"target_time"`
-	Plan             string             `bson:"plan" json:"plan"`
-	PlannedSessions  []PlannedSession   `bson:"planned_sessions,omitempty" json:"planned_sessions,omitempty"`
+	CustomTitle     string           `bson:"custom_title,omitempty" json:"custom_title,omitempty"`
+	Weeks           int              `bson:"weeks" json:"weeks"`
+	SessionsPerWeek int              `bson:"sessions_per_week" json:"sessions_per_week"`
+	TargetTime      string           `bson:"target_time,omitempty" json:"target_time"`
+	Plan            string           `bson:"plan" json:"plan"`
+	PlannedSessions []PlannedSession `bson:"planned_sessions,omitempty" json:"planned_sessions,omitempty"`
 	// CalendarDayOffsets : jours 0=lundi…6=dimanche ; si absent ou longueur ≠ sessions_per_week, on utilise le motif par défaut.
 	CalendarDayOffsets []int `bson:"calendar_day_offsets,omitempty" json:"calendar_day_offsets,omitempty"`
 	// SessionOverrides : reports et annulations séance par séance décidés avec le coach.
 	SessionOverrides []SessionOverride `bson:"session_overrides,omitempty" json:"session_overrides,omitempty"`
 	// Unavailabilities : périodes sans course ; les séances concernées sont décalées.
 	Unavailabilities []Unavailability `bson:"unavailabilities,omitempty" json:"unavailabilities,omitempty"`
-	CoachThread      []ChatTurn         `bson:"coach_thread,omitempty" json:"coach_thread,omitempty"`
+	// Races : courses prévues pendant la préparation, chacune à la place d'une séance.
+	Races []GoalRace `bson:"races,omitempty" json:"races,omitempty"`
+	// RaceName : nom de l'épreuve visée (« Marathon de Paris »), si la personne l'a donné.
+	RaceName string `bson:"race_name,omitempty" json:"race_name,omitempty"`
+	// RaceOfficial : vraie course avec dossard ; faux = défi personnel.
+	RaceOfficial bool      `bson:"race_official,omitempty" json:"race_official,omitempty"`
+	RaceInfo     *RaceInfo `bson:"race_info,omitempty" json:"race_info,omitempty"`
+	// CoachNotes : ce que le coach a retenu de la personne au fil des échanges
+	// (blessure ancienne, préférence d'horaire…). Relu à chaque conversation.
+	CoachNotes  []string   `bson:"coach_notes,omitempty" json:"coach_notes,omitempty"`
+	CoachThread []ChatTurn `bson:"coach_thread,omitempty" json:"coach_thread,omitempty"`
+	// Insight : dernière synthèse du coach sur l'avancement, gardée tant que rien ne change.
+	Insight *GoalInsight `bson:"insight,omitempty" json:"-"`
 	// PlanWithoutStravaData : plan généré sans JSON d’activités (objectif seul) ; repasse à false après régénération avec Strava.
-	PlanWithoutStravaData bool `bson:"plan_without_strava_data,omitempty" json:"plan_without_strava_data,omitempty"`
-	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`
+	PlanWithoutStravaData bool      `bson:"plan_without_strava_data,omitempty" json:"plan_without_strava_data,omitempty"`
+	CreatedAt             time.Time `bson:"created_at" json:"created_at"`
 }
 
 // EffectiveTerrain : les objectifs antérieurs à ce champ décrivent tous une course
@@ -91,4 +199,13 @@ func (g *Goal) EffectiveTerrain() string {
 		return GoalTerrainTrail
 	}
 	return GoalTerrainRoad
+}
+
+// GoalInsight : la synthèse du coach, avec l'empreinte de l'état qu'elle commente.
+// Tant que l'empreinte est la même, on la ressert au lieu de rappeler le modèle.
+type GoalInsight struct {
+	Key       string    `bson:"key" json:"-"`
+	Text      string    `bson:"text" json:"text"`
+	Tone      string    `bson:"tone" json:"tone"` // good | watch | alert
+	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 }

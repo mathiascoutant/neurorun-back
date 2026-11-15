@@ -36,6 +36,25 @@ type CalendarItem struct {
 	// RunDate : jour où la séance a réellement été courue, seulement s'il
 	// diffère de `Date` (lancée la veille ou le lendemain).
 	RunDate string `json:"run_date,omitempty"`
+	// Kind : nature de la séance (easy, long, interval, tempo, hills, recovery, race).
+	Kind string `json:"kind,omitempty"`
+	// Detail : déroulé complet de la séance, lu dans le plan ou réécrit par le coach.
+	Detail string `json:"detail,omitempty"`
+	// Edited : le coach a modifié cette séance depuis la rédaction du plan.
+	Edited bool `json:"edited,omitempty"`
+	// Race : la séance est une course prévue par la personne.
+	Race *CalendarRace `json:"race,omitempty"`
+	// ScoreTotal : note sur 100 de la course NeuroRun qui remplit la séance.
+	ScoreTotal *int `json:"score_total,omitempty"`
+}
+
+// CalendarRace : la course qui tient lieu de séance ce jour-là.
+type CalendarRace struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	DistanceKm float64 `json:"distance_km"`
+	TargetTime string  `json:"target_time,omitempty"`
+	Official   bool    `json:"official,omitempty"`
 }
 
 // ResolvedPlannedSessions: stockées en base ou repli regex sur le Markdown.
@@ -52,10 +71,14 @@ func ResolvedPlannedSessions(g *models.Goal) []models.PlannedSession {
 // `linked` sont les courses NeuroRun lancées depuis une séance précise : elles
 // comptent pour elle, même courues la veille ou le lendemain, et ne sont plus
 // candidates pour la séance du jour où elles tombent.
+//
+// `free` sont les autres courses NeuroRun (montre ou téléphone, sans séance choisie) :
+// elles valent une sortie du jour, pour que le suivi marche aussi sans Strava.
 func BuildCalendarItems(
 	g *models.Goal,
 	runs []strava.RunActivity,
 	linked []LinkedRun,
+	free []LinkedRun,
 	loc *time.Location,
 	now time.Time,
 	effortPace EffortPaceResolver,
@@ -71,6 +94,8 @@ func BuildCalendarItems(
 		linkedBySession[k] = append(linkedBySession[k], l)
 	}
 	runs = withoutLinkedCopies(runs, linked)
+	runs, freeByID := withFreeLiveRuns(runs, free)
+	texts := newPlanTexts(g)
 	var items []CalendarItem
 	for _, sch := range ResolveSchedule(g, loc) {
 		w, s := sch.Week, sch.Session
@@ -92,6 +117,15 @@ func BuildCalendarItems(
 			PlannedKm:          ps.DistanceKm,
 			TargetPaceSecPerKm: ps.PaceSecPerKm,
 			Reason:             sch.Reason,
+			Kind:               SessionKind(ps),
+			Detail:             texts.text(w, s),
+			Edited:             ps.Edited,
+		}
+		if race := FindRace(g, ps.RaceID); race != nil {
+			item.Race = &CalendarRace{
+				ID: race.ID, Name: race.Name, DistanceKm: race.DistanceKm,
+				TargetTime: race.TargetTime, Official: race.Official,
+			}
 		}
 		if sch.Moved {
 			item.Rescheduled = true
@@ -116,6 +150,7 @@ func BuildCalendarItems(
 			if st := finalizeStatus(&l.Run, ps.DistanceKm, ps.PaceSecPerKm, nil); st != "missed" {
 				item.Status = st
 				item.LiveRunID = l.LiveRunID
+				item.ScoreTotal = l.ScoreTotal
 				if rd := DateKey(MidnightIn(l.Run.StartAt, loc)); rd != item.Date {
 					item.RunDate = rd
 				}
@@ -127,9 +162,19 @@ func BuildCalendarItems(
 
 		st, matched := SessionStatus(now, day, loc, runs, ps.DistanceKm, ps.PaceSecPerKm, effortPace)
 		item.Status = st
-		if matched != nil && matched.ID > 0 {
+		switch {
+		case matched == nil:
+		case matched.ID > 0:
 			id := matched.ID
 			item.StravaActivityID = &id
+			fillActual(&item, *matched, effortPace)
+		default:
+			// Identifiant négatif : course NeuroRun courue ce jour-là sans passer par
+			// le bouton de la séance. Elle compte quand même, Strava ou pas.
+			if l, ok := freeByID[matched.ID]; ok {
+				item.LiveRunID = l.LiveRunID
+				item.ScoreTotal = l.ScoreTotal
+			}
 			fillActual(&item, *matched, effortPace)
 		}
 		items = append(items, item)

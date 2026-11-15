@@ -37,38 +37,17 @@ func (h *Handlers) GoalCalendar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var runs []strava.RunActivity
-	if u.HasStrava() {
-		access, err := h.ensureStravaAccess(r.Context(), u)
-		if err != nil {
-			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
-			return
-		}
-		after := g.CreatedAt.Unix() - 7200
-		runs, err = h.strava.FetchRunActivities(r.Context(), access, &after)
-		if err != nil {
-			h.writeStravaError(w, r, u, err, "erreur Strava")
-			return
-		}
+	items, stravaErr := h.goalCalendarItems(r, u, g)
+	if stravaErr != nil {
+		h.writeStravaError(w, r, u, stravaErr, "impossible d'accéder à Strava, reconnectez le compte")
+		return
 	}
-
-	// Courses NeuroRun lancées depuis une séance : sans elles, une séance courue
-	// la veille ou le lendemain resterait « manquée ».
-	var linked []goalcalendar.LinkedRun
-	if lives, err := h.db.ListLiveRunsForGoal(r.Context(), u.ID, g.ID); err == nil {
-		for _, lr := range lives {
-			if l, ok := goalcalendar.LinkedRunFromLive(lr); ok {
-				linked = append(linked, l)
-			}
-		}
-	}
-
-	loc, tzName := calendarLocation()
-	items := goalcalendar.BuildCalendarItems(g, runs, linked, loc, time.Now().UTC(), h.effortPaceResolver(r, u))
+	_, tzName := calendarLocation()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"timezone":         tzName,
 		"items":            items,
 		"unavailabilities": g.Unavailabilities,
+		"races":            g.Races,
 	})
 }
 

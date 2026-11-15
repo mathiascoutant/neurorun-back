@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -977,6 +978,38 @@ type goalBody struct {
 	TargetTime      string  `json:"target_time"`
 	Terrain         string  `json:"terrain"`   // "road" ou "trail" ; absent → route
 	RaceDate        string  `json:"race_date"` // AAAA-MM-JJ ; vide → échéance déduite de Weeks
+	// RaceName / RaceOfficial : l'épreuve visée, si la personne l'a nommée.
+	RaceName     string `json:"race_name"`
+	RaceOfficial bool   `json:"race_official"`
+	// RaceInfo : renseignements choisis dans la recherche de course (lieu, parcours).
+	RaceInfo *models.RaceInfo `json:"race_info"`
+	// TrainingDays : jours des séances (0 = lundi … 6 = dimanche), un par séance.
+	// Absent → répartition par défaut.
+	TrainingDays []int `json:"training_days"`
+}
+
+// newGoal construit l'objectif décrit par un corps déjà validé, sans son plan.
+func (b goalBody) newGoal(u *models.User, label string, distKm float64, targetTime string) *models.Goal {
+	g := &models.Goal{
+		UserID:          u.ID,
+		DistanceKm:      distKm,
+		DistanceLabel:   label,
+		Terrain:         b.Terrain,
+		RaceDate:        b.RaceDate,
+		RaceName:        b.RaceName,
+		RaceOfficial:    b.RaceOfficial && b.RaceName != "",
+		Weeks:           b.Weeks,
+		SessionsPerWeek: b.SessionsPerWeek,
+		TargetTime:      targetTime,
+		CoachThread:     []models.ChatTurn{goalWelcomeTurn()},
+	}
+	if len(b.TrainingDays) == b.SessionsPerWeek {
+		g.CalendarDayOffsets = b.TrainingDays
+	}
+	if b.RaceName != "" && b.RaceInfo != nil {
+		g.RaceInfo = sanitizeRaceInfo(b.RaceInfo)
+	}
+	return g
 }
 
 // validateGoalPayload lit et valide le corps JSON d'un objectif. errHTTP==0 si OK.
@@ -1030,6 +1063,24 @@ func validateGoalPayload(r *http.Request) (b goalBody, label string, distKm floa
 		b.RaceDate = d.Format("2006-01-02")
 	} else {
 		b.RaceDate = ""
+	}
+	b.RaceName = strings.TrimSpace(b.RaceName)
+	if utf8.RuneCountInString(b.RaceName) > 80 {
+		return goalBody{}, "", 0, "", http.StatusBadRequest, "nom de course trop long (80 caractères max)"
+	}
+	// Jours d'entraînement : facultatifs, mais s'ils sont donnés il en faut un par séance.
+	if len(b.TrainingDays) > 0 {
+		if len(b.TrainingDays) != b.SessionsPerWeek {
+			return goalBody{}, "", 0, "", http.StatusBadRequest, "training_days : un jour par séance"
+		}
+		seen := map[int]bool{}
+		for _, d := range b.TrainingDays {
+			if d < 0 || d > 6 || seen[d] {
+				return goalBody{}, "", 0, "", http.StatusBadRequest, "training_days : jours entre 0 et 6, sans doublon"
+			}
+			seen[d] = true
+		}
+		sort.Ints(b.TrainingDays)
 	}
 	// Terrain absent : les clients qui ne l'envoient pas décrivent une course sur route.
 	switch strings.ToLower(strings.TrimSpace(b.Terrain)) {
@@ -1533,28 +1584,14 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 		actsJSON = []byte("[]")
 	}
 
-	plan, planned, err := h.synthesizeTrainingPlan(r.Context(), actsJSON, label, b.Terrain, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData, nil)
+	g := b.newGoal(u, label, distKm, targetTime)
+	h.fillRaceClimate(r.Context(), g)
+	plan, planned, err := h.synthesizeTrainingPlan(r.Context(), actsJSON, label, b.Terrain, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData, h.planExtras(r.Context(), u, g), nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
 	}
-
-	welcome := goalWelcomeTurn()
-
-	g := &models.Goal{
-		UserID:                u.ID,
-		DistanceKm:            distKm,
-		DistanceLabel:         label,
-		Terrain:               b.Terrain,
-		RaceDate:              b.RaceDate,
-		Weeks:                 b.Weeks,
-		SessionsPerWeek:       b.SessionsPerWeek,
-		TargetTime:            targetTime,
-		Plan:                  plan,
-		PlannedSessions:       planned,
-		CoachThread:           []models.ChatTurn{welcome},
-		PlanWithoutStravaData: !hasStravaData,
-	}
+	g.Plan, g.PlannedSessions, g.PlanWithoutStravaData = plan, planned, !hasStravaData
 	if err := h.db.CreateGoal(r.Context(), g); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sauvegarde objectif"})
 		return
@@ -1610,7 +1647,8 @@ func (h *Handlers) ReplanGoalWithStrava(w http.ResponseWriter, r *http.Request) 
 	actsJSON, _ := json.Marshal(acts)
 
 	plan, planned, err := h.synthesizeTrainingPlan(
-		r.Context(), actsJSON, g.DistanceLabel, g.EffectiveTerrain(), g.TargetTime, g.Weeks, g.SessionsPerWeek, true, nil,
+		r.Context(), actsJSON, g.DistanceLabel, g.EffectiveTerrain(), g.TargetTime, g.Weeks, g.SessionsPerWeek, true,
+		h.planExtras(r.Context(), u, g), nil,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
@@ -1627,12 +1665,27 @@ func (h *Handlers) ReplanGoalWithStrava(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	refreshed, err := h.db.GetGoalByUser(r.Context(), u.ID, gid)
+	refreshed, err := h.reattachRaces(r.Context(), u.ID, gid)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "erreur"})
 		return
 	}
 	writeJSON(w, http.StatusOK, refreshed)
+}
+
+// reattachRaces relit un objectif dont le plan vient d'être réécrit et y remet les
+// courses prévues, qu'une réécriture efface avec les séances qu'elles remplaçaient.
+func (h *Handlers) reattachRaces(ctx context.Context, userID, goalID primitive.ObjectID) (*models.Goal, error) {
+	g, err := h.db.GetGoalByUser(ctx, userID, goalID)
+	if err != nil || len(g.Races) == 0 {
+		return g, err
+	}
+	loc, _ := calendarLocation()
+	goalcalendar.ReattachRaces(g, loc, time.Now().UTC())
+	if err := h.db.UpdateGoalSessions(ctx, userID, goalID, g.PlannedSessions, g.SessionOverrides, g.Races); err != nil {
+		return nil, err
+	}
+	return g, nil
 }
 
 type ctxUser struct{}
@@ -1792,6 +1845,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Patch("/conversations/{id}", h.PatchConversation)
 		pr.Delete("/conversations/{id}", h.DeleteConversation)
 		pr.Post("/goals/feasibility", h.GoalFeasibility)
+		pr.Post("/goals/race-search", h.GoalRaceSearch)
 		pr.Post("/goals", h.CreateGoal)
 		pr.Post("/goals/stream", h.CreateGoalStream)
 		pr.Get("/goals", h.ListGoals)
@@ -1800,6 +1854,11 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Post("/goals/{id}/replan/stream", h.ReplanGoalWithStravaStream)
 		pr.Delete("/goals/{id}", h.DeleteGoal)
 		pr.Get("/goals/{id}/calendar", h.GoalCalendar)
+		pr.Get("/goals/{id}/overview", h.GoalOverview)
+		pr.Get("/goals/{id}/sessions/{week}/{session}/workout", h.GoalSessionWorkout)
+		pr.Put("/goals/{id}/race", h.SetGoalRace)
+		pr.Post("/goals/{id}/races", h.AddGoalRace)
+		pr.Delete("/goals/{id}/races/{raceId}", h.DeleteGoalRace)
 		pr.Get("/goals/{id}/suggestion", h.GetGoalSuggestion)
 		pr.Post("/coach-suggestions/{id}/accept", h.AcceptCoachSuggestion)
 		pr.Post("/coach-suggestions/{id}/dismiss", h.DismissCoachSuggestion)

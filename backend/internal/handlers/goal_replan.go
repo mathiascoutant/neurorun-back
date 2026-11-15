@@ -21,6 +21,7 @@ func (h *Handlers) synthesizeTrainingPlan(
 	label, terrain, targetTime string,
 	weeks, spw int,
 	hasStravaData bool,
+	extras string,
 	onProgress func(planProgress),
 ) (string, []models.PlannedSession, error) {
 	if weeks < 1 || spw < 1 || weeks > 52 || spw > 7 {
@@ -81,7 +82,7 @@ Pour **chaque** séance (- **Séance 1 :** …, - **Séance 2 :** …) une **seu
 
 Pas de paragraphes de plus de 3 phrases d'affilée. Pas de listes numérotées longues.
 
-**Activités (JSON) :** ` + string(actsJSON) + terrainRule
+**Activités (JSON) :** ` + string(actsJSON) + terrainRule + extras
 	} else {
 		system = `Tu es un coach course à pied. Tu écris en français, en TUTOIEMENT. Style clair : phrases courtes, listes à puces. Niveau accessible : une fois, rappelle que min/km = minutes pour parcourir 1 km.
 
@@ -117,7 +118,7 @@ Exactement 3 puces courtes.
 
 Pas de paragraphes trop longs.
 
-**Note** : pas de données d’activités JSON — n’invente pas de stats personnelles.` + terrainRule
+**Note** : pas de données d’activités JSON — n’invente pas de stats personnelles.` + terrainRule + extras
 	}
 
 	userQ := fmt.Sprintf(`Objectif course : %s.

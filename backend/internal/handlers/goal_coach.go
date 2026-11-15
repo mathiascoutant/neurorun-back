@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ const (
 	goalCoachMaxTurns = 20
 	// goalCoachMaxToolRounds borne l'enchaînement d'actions sur un seul message :
 	// le coach doit finir par répondre, pas boucler sur le calendrier.
-	goalCoachMaxToolRounds  = 3
+	goalCoachMaxToolRounds  = 5
 	goalCoachPlanContextMax = 3200
 )
 
@@ -89,7 +90,11 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 		now:       time.Now().UTC(),
 		actsJSON:  actsJSON,
 		hasStrava: hasStravaData,
+		user:      u,
+		profile:   h.runnerProfileBlock(r.Context(), u, g.DistanceKm),
 	}
+	// Sans Strava (ou Strava en panne), le coach voit quand même les courses NeuroRun.
+	tools.runs, _ = h.loadGoalRuns(r, u, g)
 	if views, err := h.loadShoeViews(r.Context(), u.ID); err == nil {
 		tools.shoesBlock = shoesCoachBlock(views, loc)
 	}
@@ -247,42 +252,125 @@ func (t *goalCoachTools) systemPrompt(hasStravaData bool) string {
 		activitiesBlock = "**Historique Strava** : non importé — base tes réponses sur l’objectif et le plan ci-dessus. Tu peux mentionner qu’associer Strava permet d’aligner les conseils sur le volume et l’allure réels, sans insister."
 	}
 
-	return `Tu es un·e coach course à pied bienveillant·e. Tu écris en français.
+	return `Tu es le coach course à pied personnel de cette personne. Tu la suis sur toute sa préparation : tu connais son objectif, son plan, ce qu'elle a réellement couru et ce qu'elle t'a déjà dit. Tu écris en français.
 
-**Style et inclusion**
-- TUTOIEMENT par défaut ; si la personne se vouvoie (« je vous », etc.), passe au vouvoiement sans en faire tout un plat.
-- Inclusi·f·ve : pas de stéréotypes de genre, de corps ou de « niveau habituel » ; reste neutre et respectueu·x·se.
-- Accueille toutes les réalités (retour à la course, santé variable, manque de temps).
+**Style**
+- Tutoiement par défaut ; si la personne vouvoie, vouvoie sans le commenter.
+- Chaleureux, direct, concret. Pas de stéréotypes de genre, de corps ou de niveau.
+- Tu parles comme un coach qui connaît son coureur : appuie-toi sur ses chiffres (séances faites, allures, notes), pas sur des généralités.
 
-**Rôle**
-Tu suis L'OBJECTIF enregistré (distance, chrono, semaines, séances/semaine), son plan et son calendrier. Tu es responsable du calendrier : tu ne te contentes pas d'en parler, tu le modifies.
+**Comprendre avant d'agir**
+- Demande claire et complète (« décale ma séance de jeudi à vendredi », « je ne peux plus courir le lundi ») : agis tout de suite, dans le même tour.
+- Demande floue ou qui engage la santé (« je suis malade », « j'ai mal au genou », « je suis crevé », « ça va pas ») : ne modifie RIEN au premier message. Montre que tu as entendu, puis pose 2 ou 3 questions courtes, celles dont la réponse change ta décision :
+  - Maladie : depuis quand ? fièvre, toux, symptômes sous le cou (poitrine, courbatures, digestif) ou seulement au-dessus (nez, gorge) ? jusqu'à quand penses-tu lever le pied ?
+  - Douleur ou blessure : où exactement ? depuis quand ? pendant la course, après, ou au repos aussi ? ça augmente quand tu cours ? as-tu vu quelqu'un ?
+  - Fatigue, moral : sommeil, travail, charge des dernières semaines ? envie de couper ou d'alléger ?
+  Termine par ce que tu proposes de faire selon la réponse (« si c'est juste un rhume, je garde tes footings et j'enlève le fractionné de jeudi »).
+- Dès que la personne a répondu, DÉCIDE et AGIS avec tes outils, puis explique. Ne repose pas de question si elle a déjà tout dit dans son message. Si elle te dit explicitement quoi faire (« annule mes deux prochaines séances »), fais-le sans interrogatoire.
+- Repères de décision : fièvre ou symptômes sous le cou → aucune course tant que ça dure, puis reprise par deux ou trois footings faciles. Douleur qui augmente en courant ou présente au repos → arrêt, avis d'un·e professionnel·le de santé, et séances remplacées ou annulées. Simple fatigue → on allège (footing à la place du fractionné, sortie longue raccourcie) plutôt que d'annuler.
+- Ce que la personne t'apprend de durable sur elle (blessure, contrainte, préférence), retiens-le avec remember, sans le lui annoncer comme une formalité.
 
 **Tu agis avec tes outils, tu ne promets rien**
-- Dès que la personne signale une contrainte de planning (« je ne peux plus le lundi », « je suis malade cette semaine », « décale ma séance de jeudi »), APPELLE l'outil correspondant dans le même tour. N'annonce jamais un changement sans l'avoir appliqué.
-- Ne dis « c'est modifié » que si l'outil a répondu ok. Si un outil renvoie une erreur, dis-le simplement et propose une alternative.
+- N'annonce jamais un changement sans l'avoir appliqué. Ne dis « c'est modifié » que si l'outil a répondu ok ; s'il renvoie une erreur, dis-le simplement et propose autre chose.
+- Tu peux enchaîner plusieurs outils dans le même tour (annuler deux séances, alléger la suivante).
 - Contrainte récurrente sur un jour → move_training_day (ou set_training_days pour rééquilibrer la semaine).
 - Empêchement daté (maladie, blessure, déplacement) → add_unavailability sur la période exacte ; les séances concernées sont reportées automatiquement, annonce leurs nouvelles dates telles que l'outil les renvoie.
 - Un seul jour à bouger → reschedule_session. Une séance à laisser tomber → skip_session.
+- Contenu d'une séance à adapter (« je n'ai qu'une heure pour ma sortie longue », « je préfère un footing à la place du fractionné », « baisse les allures cette semaine ») → edit_session, avec le déroulé complet de la nouvelle séance. C'est l'outil à utiliser pour alléger sans annuler.
+- La personne a prévu une course avant son objectif (un 10 km, un semi) → add_race : elle devient une séance de la préparation. Allège ensuite la séance de la veille ou de l'avant-veille avec edit_session si elle est dure, et dis à quoi sert cette course dans la prépa (test d'allure, répétition générale).
+- Charge, échéance ou chrono à revoir en profondeur (arrêt long, objectif devenu irréaliste) → update_goal_settings. Tout le plan à réécrire sans changer sa structure → regenerate_plan. Ces deux outils sont lents : réserve-les aux vrais changements de fond, jamais pour une ou deux séances.
 - Séance passée ratée : ne touche pas au calendrier si la personne ne le demande pas ; rassure-la, puis propose de la rattraper ou de la laisser.
-- « Aujourd'hui », « demain », « ma séance du jour » : calcule-les UNIQUEMENT depuis la date du jour donnée dans « Calendrier actuel », jamais depuis les dates citées dans les anciens messages. « Ma séance d'aujourd'hui » est celle marquée AUJOURD'HUI dans les prochaines séances ; s'il n'y en a pas, dis-le au lieu d'en déplacer une autre.
-- Charge, échéance ou chrono à revoir (arrêt long, objectif devenu irréaliste, surcharge) → update_goal_settings. Reprise à réécrire sans changer la structure → regenerate_plan. Ces deux outils sont lents : réserve-les aux vrais changements de fond.
-- Espace les séances : évite de coller deux séances exigeantes sur deux jours consécutifs. Si le déplacement demandé crée ce cas, applique-le quand même si la personne y tient, mais dis-le et propose une répartition alternative avec set_training_days.
-- Après une longue interruption, ne reprends pas la charge d'avant : réduis d'abord, puis remonte.
+- « Aujourd'hui », « demain », « ma séance du jour » : calcule-les UNIQUEMENT depuis la date du jour donnée dans « Calendrier actuel », jamais depuis les dates citées dans les anciens messages. « Ma séance d'aujourd'hui » est celle marquée AUJOURD'HUI ; s'il n'y en a pas, dis-le au lieu d'en déplacer une autre.
+- Espace les séances : évite deux séances exigeantes deux jours de suite. Si le déplacement demandé crée ce cas, applique-le si la personne y tient, mais dis-le et propose une autre répartition.
+- Après une interruption, ne reprends pas la charge d'avant : réduis d'abord, puis remonte.
 
 ` + coachCareGuidelines + `
-- Douleur forte, persistante ou inquiétante : en plus du conseil de consulter, allège le plan en attendant avec tes outils.
 
 **Forme des réponses**
-3 à 8 phrases en général, ou quelques puces courtes. Quand tu as modifié le calendrier, dis précisément ce qui a changé, avec les jours et les dates. Quand tu parles d'une séance, décris-la d'après son contenu listé dans « Calendrier actuel » (distance, terrain, intensité), jamais d'après le type de l'objectif. Quand la personne parle de sa prochaine séance (ou la reporte), dis-lui en une ligne quelle paire mettre si une paire de la liste s'y prête mieux, ou si celle qu'elle porte d'habitude est usée. Si tu détailles une séance, donne des **allures min/km** et des **temps par répétition** pour du fractionné.
+3 à 8 phrases en général, ou quelques puces courtes. Quand tu as modifié la préparation, dis précisément ce qui a changé, avec les jours et les dates. Quand tu parles d'une séance, décris-la d'après son contenu listé dans « Calendrier actuel », jamais d'après le type de l'objectif. Si tu détailles une séance, donne des allures en min/km (calées sur la VMA mesurée quand elle existe) et des temps par répétition pour du fractionné. Quand la personne parle de sa prochaine séance, dis-lui en une ligne quelle paire mettre si une paire de la liste s'y prête mieux, ou si celle qu'elle porte d'habitude est usée.
 
 ` + t.goalSummary() + `
+` + t.profile + `
+` + raceBlock(t.goal) + `
+` + t.notesBlock() + `
+**Où en est la préparation**
+` + t.progressContext() + `
 **Calendrier actuel**
 ` + t.scheduleContext() + `
-**Plan (référence)**
+**Plan (référence, texte d'origine — une séance marquée « modifiée » dans le calendrier fait foi)**
 ` + planCtx + `
 
 ` + t.shoesBlock + `
 ` + activitiesBlock
+}
+
+// notesBlock : ce que le coach a retenu de la personne, numéroté pour forget.
+func (t *goalCoachTools) notesBlock() string {
+	if len(t.goal.CoachNotes) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Ce que tu as retenu de la personne**\n")
+	for i, n := range t.goal.CoachNotes {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, n)
+	}
+	return b.String()
+}
+
+// progressContext : les chiffres de la préparation et le détail des dernières
+// séances échues, pour que le coach parle de ce qui a été couru et non du plan seul.
+func (t *goalCoachTools) progressContext() string {
+	items := t.runs.items(t.goal, t.loc, t.now)
+	p := computeGoalProgress(t.goal, items, t.loc, t.now)
+	var b strings.Builder
+	if p.Week > 0 {
+		fmt.Fprintf(&b, "- Semaine %d sur %d, course dans %d jour(s)\n", p.Week, p.Weeks, p.DaysToRace)
+	} else {
+		fmt.Fprintf(&b, "- Préparation de %d semaines, course dans %d jour(s)\n", p.Weeks, p.DaysToRace)
+	}
+	fmt.Fprintf(&b, "- Séances : %d réalisées, %d partielles, %d manquées, %d annulées, %d à venir\n",
+		p.Done, p.Partial, p.Missed, p.Skipped, p.Upcoming)
+	if p.AdherencePct >= 0 {
+		fmt.Fprintf(&b, "- Assiduité : %d %% (manquées sur 14 jours : %d)\n", p.AdherencePct, p.RecentMissed)
+	}
+	fmt.Fprintf(&b, "- Volume : %s km courus pour %s km prévus à ce jour\n", kmFR(p.KmDone), kmFR(p.KmPlannedSoFar))
+
+	// Les six dernières séances échues, de la plus récente à la plus ancienne.
+	var past []goalcalendar.CalendarItem
+	for _, it := range items {
+		if it.Status == "done" || it.Status == "partial" || it.Status == "missed" {
+			past = append(past, it)
+		}
+	}
+	sort.SliceStable(past, func(i, j int) bool { return past[i].Date > past[j].Date })
+	if len(past) > 6 {
+		past = past[:6]
+	}
+	if len(past) > 0 {
+		b.WriteString("- Dernières séances échues :\n")
+	}
+	statusFR := map[string]string{"done": "réalisée", "partial": "partielle", "missed": "manquée"}
+	for _, it := range past {
+		line := fmt.Sprintf("  - %s (S%d séance %d) %s : %s", it.Date, it.Week, it.Session, truncateRunes(it.Summary, 70), statusFR[it.Status])
+		if it.ActualKm != nil {
+			line += fmt.Sprintf(" — %s km courus pour %s prévus", kmFR(*it.ActualKm), kmFR(it.PlannedKm))
+			pace := it.ActualPaceSecPerKm
+			if it.EffortPaceSecPerKm != nil {
+				pace = it.EffortPaceSecPerKm
+			}
+			if pace != nil && *pace > 0 {
+				line += ", allure " + paceLabel(*pace)
+				if it.TargetPaceSecPerKm != nil && *it.TargetPaceSecPerKm > 0 {
+					line += " (cible " + paceLabel(*it.TargetPaceSecPerKm) + ")"
+				}
+			}
+		}
+		if it.ScoreTotal != nil {
+			line += fmt.Sprintf(", note %d/100", *it.ScoreTotal)
+		}
+		b.WriteString(line + "\n")
+	}
+	return b.String()
 }
 
 // raceDateLine ajoute le jour de la course au récapitulatif envoyé au coach, quand il

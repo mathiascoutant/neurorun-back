@@ -16,11 +16,12 @@ type ChatExtractor interface {
 }
 
 type rawPlanned struct {
-	Week           int      `json:"week"`
-	Session        int      `json:"session"`
-	DistanceKm     float64  `json:"distance_km"`
-	PaceSecPerKm   *float64 `json:"pace_sec_per_km"`
-	Summary        string   `json:"summary"`
+	Week         int      `json:"week"`
+	Session      int      `json:"session"`
+	DistanceKm   float64  `json:"distance_km"`
+	PaceSecPerKm *float64 `json:"pace_sec_per_km"`
+	Summary      string   `json:"summary"`
+	Kind         string   `json:"kind"`
 }
 
 // ExtractPlannedSessions demande à l’IA une liste JSON strictement typée.
@@ -39,6 +40,7 @@ Chaque élément du tableau a exactement les clés :
 - "distance_km" : nombre décimal = distance totale **minimum** à couvrir sur Strava ce jour (échauff + corps + retour). Pour une sortie « 6 km facile », mets 6.
 - "pace_sec_per_km" : nombre (secondes pour parcourir 1 km en allure moyenne **cible pour toute la sortie**) ou null si le plan ne permet pas de l’estimer sans ambiguïté.
 - "summary" : courte phrase qui dit ce qu'est la séance (ex. « Fractionné 6x400 m », « Sortie longue en endurance »).
+- "kind" : la nature de la séance, un seul mot parmi "easy" (footing, endurance), "long" (sortie longue), "interval" (fractionné, répétitions), "tempo" (seuil, allure course), "hills" (côtes), "recovery" (récupération).
 
 Le tableau doit contenir **exactement** W×S entrées, dans l’ordre : semaine 1 sessions 1..S, semaine 2… jusqu’à la semaine W.`
 
@@ -100,11 +102,12 @@ Le tableau doit contenir **exactement** W×S entrées, dans l’ordre : semaine 
 			}
 		}
 		out = append(out, models.PlannedSession{
-			Week:           r.Week,
-			Session:        r.Session,
-			DistanceKm:     r.DistanceKm,
-			PaceSecPerKm:   p,
-			Summary:        summary,
+			Week:         r.Week,
+			Session:      r.Session,
+			DistanceKm:   r.DistanceKm,
+			PaceSecPerKm: p,
+			Summary:      summary,
+			Kind:         models.NormalizeSessionKind(strings.ToLower(strings.TrimSpace(r.Kind))),
 		})
 	}
 	return out, nil

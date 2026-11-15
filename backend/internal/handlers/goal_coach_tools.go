@@ -64,7 +64,35 @@ type goalCoachTools struct {
 	hasStrava bool
 	// shoesBlock : paires et usure, décrites au modèle ; vide si la lecture a échoué.
 	shoesBlock string
-	actions    []coachAction
+	// user, runs, profile : de quoi juger ce qui a été couru et personnaliser les
+	// conseils (VMA, zones cardio). profile est vide si rien n'est mesuré.
+	user    *models.User
+	runs    goalRuns
+	profile string
+	actions []coachAction
+}
+
+// planExtras : ce qui personnalise une réécriture du plan (mesures, courses, notes).
+func (t *goalCoachTools) planExtras(ctx context.Context) string {
+	if t.user == nil {
+		return ""
+	}
+	return t.h.planExtras(ctx, t.user, t.goal)
+}
+
+// afterPlanRewrite remet en place ce qu'une réécriture du plan a effacé : les
+// courses prévues, qui tiennent chacune lieu d'une séance.
+func (t *goalCoachTools) afterPlanRewrite(ctx context.Context) {
+	g, err := t.h.db.GetGoalByUser(ctx, t.userID, t.goalID)
+	if err != nil {
+		return
+	}
+	t.goal = g
+	if len(g.Races) == 0 {
+		return
+	}
+	goalcalendar.ReattachRaces(t.goal, t.loc, t.now)
+	_ = t.saveSessions(ctx)
 }
 
 func toolPayload(v any) string {
@@ -82,6 +110,10 @@ func toolFailure(msg string) string {
 // goalCoachToolDefs décrit les outils au modèle. Les jours sont nommés en français :
 // un index numérique de jour se prête trop facilement à un décalage d'un cran.
 func goalCoachToolDefs() []oai.Tool {
+	return append(goalCoachScheduleToolDefs(), goalCoachContentToolDefs()...)
+}
+
+func goalCoachScheduleToolDefs() []oai.Tool {
 	weekdayEnum := []string{"lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"}
 	return []oai.Tool{
 		oai.NewFunctionTool(
@@ -225,7 +257,7 @@ func (t *goalCoachTools) scheduleContext() string {
 		b.WriteString("- Aucune séance à venir (préparation terminée ou tout est annulé).\n")
 	} else {
 		b.WriteString("- Prochaines séances :\n")
-		for _, s := range upcoming {
+		for i, s := range upcoming {
 			line := fmt.Sprintf("  - semaine %d séance %d — %s %s",
 				s.Week, s.Session, weekdayNameOf(s.Date), goalcalendar.DateKey(s.Date))
 			line += t.sessionContent(s.Week, s.Session)
@@ -243,6 +275,13 @@ func (t *goalCoachTools) scheduleContext() string {
 				line += ")"
 			}
 			b.WriteString(line + "\n")
+			// Le déroulé des trois prochaines : c'est celles dont la personne parle,
+			// et celles que le coach devra réécrire s'il faut alléger.
+			if i < 3 {
+				if d := goalcalendar.SessionText(t.goal, s.Week, s.Session); d != "" {
+					b.WriteString("    déroulé : " + truncateRunes(d, 420) + "\n")
+				}
+			}
 		}
 	}
 
@@ -272,17 +311,24 @@ func (t *goalCoachTools) scheduleContext() string {
 // sessionContent : le contenu prévu d'une séance, pour que le coach la nomme juste
 // (« la sortie longue ») et choisisse la paire qui va avec, sans le deviner.
 func (t *goalCoachTools) sessionContent(week, session int) string {
-	for _, p := range t.goal.PlannedSessions {
+	for _, p := range goalcalendar.ResolvedPlannedSessions(t.goal) {
 		if p.Week != week || p.Session != session {
 			continue
 		}
+		out := ""
 		summary := strings.TrimSpace(p.Summary)
 		switch {
 		case summary != "":
-			return " : " + summary
+			out = " : " + summary
 		case p.DistanceKm > 0:
-			return fmt.Sprintf(" : %.1f km", p.DistanceKm)
+			out = fmt.Sprintf(" : %.1f km", p.DistanceKm)
 		}
+		if p.RaceID != "" {
+			out += " [course prévue]"
+		} else if p.Edited {
+			out += " [modifiée]"
+		}
+		return out
 	}
 	return ""
 }
@@ -338,6 +384,11 @@ func (t *goalCoachTools) dropFutureOverrides(keep func(day time.Time) bool) {
 			kept = append(kept, o)
 			continue
 		}
+		// Une course prévue a sa date à elle : réorganiser la semaine ne la déplace pas.
+		if ps := goalcalendar.PlannedAt(t.goal, o.Week, o.Session); ps != nil && ps.RaceID != "" {
+			kept = append(kept, o)
+			continue
+		}
 		day, ok := goalcalendar.ParseDateKey(o.Date, t.loc)
 		if ok && !day.Before(today) && !keep(day) {
 			continue
@@ -373,6 +424,16 @@ func (t *goalCoachTools) execute(ctx context.Context, call oai.ToolCall) string 
 		return t.updateGoalSettings(ctx, args)
 	case "regenerate_plan":
 		return t.regeneratePlan(ctx, args)
+	case "edit_session":
+		return t.editSession(ctx, args)
+	case "add_race":
+		return t.addRace(ctx, args)
+	case "remove_race":
+		return t.removeRace(ctx, args)
+	case "remember":
+		return t.remember(ctx, args)
+	case "forget":
+		return t.forget(ctx, args)
 	default:
 		return toolFailure("action inconnue")
 	}
@@ -736,7 +797,7 @@ func (t *goalCoachTools) updateGoalSettings(ctx context.Context, args map[string
 	}
 
 	plan, planned, err := t.h.synthesizeTrainingPlan(
-		ctx, t.actsJSON, t.goal.DistanceLabel, t.goal.EffectiveTerrain(), target, weeks, spw, t.hasStrava, nil,
+		ctx, t.actsJSON, t.goal.DistanceLabel, t.goal.EffectiveTerrain(), target, weeks, spw, t.hasStrava, t.planExtras(ctx), nil,
 	)
 	if err != nil {
 		return toolFailure("la réécriture du plan a échoué, rien n'a été modifié")
@@ -758,6 +819,7 @@ func (t *goalCoachTools) updateGoalSettings(ctx context.Context, args map[string
 	if err := t.saveSchedule(ctx); err != nil {
 		return toolFailure("enregistrement impossible")
 	}
+	t.afterPlanRewrite(ctx)
 
 	label := "Objectif ajusté : " + strings.Join(changes, ", ") + " · plan réécrit"
 	t.record("update_goal_settings", label)
@@ -772,7 +834,7 @@ func (t *goalCoachTools) updateGoalSettings(ctx context.Context, args map[string
 func (t *goalCoachTools) regeneratePlan(ctx context.Context, args map[string]any) string {
 	plan, planned, err := t.h.synthesizeTrainingPlan(
 		ctx, t.actsJSON, t.goal.DistanceLabel, t.goal.EffectiveTerrain(), t.goal.TargetTime,
-		t.goal.Weeks, t.goal.SessionsPerWeek, t.hasStrava, nil,
+		t.goal.Weeks, t.goal.SessionsPerWeek, t.hasStrava, t.planExtras(ctx), nil,
 	)
 	if err != nil {
 		return toolFailure("la réécriture du plan a échoué, rien n'a été modifié")
@@ -783,9 +845,7 @@ func (t *goalCoachTools) regeneratePlan(ctx context.Context, args map[string]any
 	); err != nil {
 		return toolFailure("enregistrement impossible")
 	}
-	if g, err := t.h.db.GetGoalByUser(ctx, t.userID, t.goalID); err == nil {
-		t.goal = g
-	}
+	t.afterPlanRewrite(ctx)
 
 	label := "Plan réécrit"
 	if r := argString(args, "reason"); r != "" {

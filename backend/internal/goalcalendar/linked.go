@@ -23,6 +23,8 @@ type LinkedRun struct {
 	Session   int
 	LiveRunID string
 	Run       strava.RunActivity
+	// ScoreTotal : note sur 100 de la course, quand elle a été notée.
+	ScoreTotal *int
 }
 
 // LiveRunStart : instant de départ d'une course NeuroRun. La date d'envoi
@@ -34,11 +36,9 @@ func LiveRunStart(lr models.LiveRun) time.Time {
 	return lr.CreatedAt
 }
 
-// LinkedRunFromLive lit une course rattachée à une séance ; faux si elle ne l'est pas.
-func LinkedRunFromLive(lr models.LiveRun) (LinkedRun, bool) {
-	if lr.GoalSession == nil {
-		return LinkedRun{}, false
-	}
+// RunFromLive présente une course NeuroRun comme une sortie à juger. Week et
+// Session valent zéro quand elle n'a pas été lancée depuis une séance.
+func RunFromLive(lr models.LiveRun) LinkedRun {
 	run := strava.RunActivity{
 		Name:      lr.Name,
 		Type:      "Run",
@@ -51,12 +51,59 @@ func LinkedRunFromLive(lr models.LiveRun) (LinkedRun, bool) {
 	if lr.SessionType == models.RunTypeInterval {
 		run.WorkoutType = strava.WorkoutTypeRunWorkout
 	}
-	return LinkedRun{
-		Week:      lr.GoalSession.Week,
-		Session:   lr.GoalSession.Session,
-		LiveRunID: lr.ID.Hex(),
-		Run:       run,
-	}, true
+	out := LinkedRun{LiveRunID: lr.ID.Hex(), Run: run}
+	if lr.GoalSession != nil {
+		out.Week = lr.GoalSession.Week
+		out.Session = lr.GoalSession.Session
+	}
+	if lr.Score != nil {
+		total := lr.Score.Total
+		out.ScoreTotal = &total
+	}
+	return out
+}
+
+// LinkedRunFromLive lit une course rattachée à une séance ; faux si elle ne l'est pas.
+func LinkedRunFromLive(lr models.LiveRun) (LinkedRun, bool) {
+	if lr.GoalSession == nil {
+		return LinkedRun{}, false
+	}
+	return RunFromLive(lr), true
+}
+
+// withFreeLiveRuns ajoute aux sorties Strava les courses NeuroRun libres qui n'y
+// figurent pas déjà (une course publiée sur Strava ne doit pas compter deux fois).
+// Elles reçoivent un identifiant négatif, rendu dans la table pour les retrouver.
+func withFreeLiveRuns(runs []strava.RunActivity, free []LinkedRun) ([]strava.RunActivity, map[int64]LinkedRun) {
+	if len(free) == 0 {
+		return runs, nil
+	}
+	byID := make(map[int64]LinkedRun, len(free))
+	out := append([]strava.RunActivity(nil), runs...)
+	for i, l := range free {
+		if hasCopy(runs, l.Run.StartAt) {
+			continue
+		}
+		id := -int64(i + 1)
+		r := l.Run
+		r.ID = id
+		byID[id] = l
+		out = append(out, r)
+	}
+	return out, byID
+}
+
+func hasCopy(runs []strava.RunActivity, start time.Time) bool {
+	for _, r := range runs {
+		d := r.StartAt.Sub(start)
+		if d < 0 {
+			d = -d
+		}
+		if d <= sameRunTolerance {
+			return true
+		}
+	}
+	return false
 }
 
 // FindScheduled renvoie la séance (semaine, numéro) du planning résolu.

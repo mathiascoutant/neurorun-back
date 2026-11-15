@@ -57,7 +57,7 @@ func TestLinkedRunCountsForTomorrowsSession(t *testing.T) {
 	stravaCopy.ID = 99
 	stravaCopy.StartAt = stravaCopy.StartAt.Add(2 * time.Minute)
 
-	got := byKey(BuildCalendarItems(linkedGoal(), []strava.RunActivity{stravaCopy}, []LinkedRun{l}, loc, now, nil))
+	got := byKey(BuildCalendarItems(linkedGoal(), []strava.RunActivity{stravaCopy}, []LinkedRun{l}, nil, loc, now, nil))
 
 	frac := got["1:2"]
 	if frac.Status != "done" || frac.LiveRunID != "live-1" {
@@ -75,7 +75,7 @@ func TestLinkedRunCountsForTomorrowsSession(t *testing.T) {
 func TestLinkedRunCountsForYesterdaysSession(t *testing.T) {
 	loc := paris(t)
 	now := time.Date(2026, 8, 12, 20, 0, 0, 0, loc)
-	got := byKey(BuildCalendarItems(linkedGoal(), nil, []LinkedRun{linkedInterval(loc, 12, 9, 8)}, loc, now, nil))
+	got := byKey(BuildCalendarItems(linkedGoal(), nil, []LinkedRun{linkedInterval(loc, 12, 9, 8)}, nil, loc, now, nil))
 
 	if st := got["1:2"].Status; st != "done" {
 		t.Fatalf("fractionné d'hier : statut %q, attendu done", st)
@@ -89,7 +89,7 @@ func TestLinkedRunCountsForYesterdaysSession(t *testing.T) {
 func TestLinkedRunTooShortFallsBack(t *testing.T) {
 	loc := paris(t)
 	now := time.Date(2026, 8, 10, 20, 0, 0, 0, loc)
-	got := byKey(BuildCalendarItems(linkedGoal(), nil, []LinkedRun{linkedInterval(loc, 10, 18, 3)}, loc, now, nil))
+	got := byKey(BuildCalendarItems(linkedGoal(), nil, []LinkedRun{linkedInterval(loc, 10, 18, 3)}, nil, loc, now, nil))
 
 	if it := got["1:2"]; it.Status != "upcoming" || it.LiveRunID != "" {
 		t.Fatalf("fractionné : statut %q, course %q ; attendu upcoming sans course", it.Status, it.LiveRunID)

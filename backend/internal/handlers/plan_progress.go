@@ -237,6 +237,7 @@ func (h *Handlers) ReplanGoalWithStravaStream(w http.ResponseWriter, r *http.Req
 
 	plan, planned, err := h.synthesizeTrainingPlan(
 		r.Context(), actsJSON, g.DistanceLabel, g.EffectiveTerrain(), g.TargetTime, g.Weeks, g.SessionsPerWeek, true,
+		h.planExtras(r.Context(), u, g),
 		func(p planProgress) { sse.send(p) },
 	)
 	if err != nil {
@@ -253,7 +254,7 @@ func (h *Handlers) ReplanGoalWithStravaStream(w http.ResponseWriter, r *http.Req
 	}
 	sse.send(planProgress{Done: total, Total: total, Label: "Plan enregistré"})
 
-	refreshed, err := h.db.GetGoalByUser(r.Context(), u.ID, gid)
+	refreshed, err := h.reattachRaces(r.Context(), u.ID, gid)
 	if err != nil {
 		fail("plan enregistré, rechargement impossible", "")
 		return
@@ -314,29 +315,18 @@ func (h *Handlers) CreateGoalStream(w http.ResponseWriter, r *http.Request) {
 		sse.send(planProgress{Done: 0, Total: total, Label: "Préparation du plan"})
 	}
 
+	g := b.newGoal(u, label, distKm, targetTime)
+	h.fillRaceClimate(r.Context(), g)
 	plan, planned, err := h.synthesizeTrainingPlan(
 		r.Context(), actsJSON, label, b.Terrain, targetTime, b.Weeks, b.SessionsPerWeek, hasStravaData,
+		h.planExtras(r.Context(), u, g),
 		func(p planProgress) { sse.send(p) },
 	)
 	if err != nil {
 		fail("le coach n’a pas pu écrire le plan", "")
 		return
 	}
-
-	g := &models.Goal{
-		UserID:                u.ID,
-		DistanceKm:            distKm,
-		DistanceLabel:         label,
-		Terrain:               b.Terrain,
-		RaceDate:              b.RaceDate,
-		Weeks:                 b.Weeks,
-		SessionsPerWeek:       b.SessionsPerWeek,
-		TargetTime:            targetTime,
-		Plan:                  plan,
-		PlannedSessions:       planned,
-		CoachThread:           []models.ChatTurn{goalWelcomeTurn()},
-		PlanWithoutStravaData: !hasStravaData,
-	}
+	g.Plan, g.PlannedSessions, g.PlanWithoutStravaData = plan, planned, !hasStravaData
 	if err := h.db.CreateGoal(r.Context(), g); err != nil {
 		fail("sauvegarde de l’objectif impossible", "")
 		return

@@ -905,3 +905,93 @@ func (d *DB) AppendGoalCoachTurns(ctx context.Context, userID, goalID primitive.
 	)
 	return err
 }
+
+// UpdateGoalSessions enregistre le contenu des séances, leurs reports et les courses
+// prévues d'un seul geste : une course touche aux trois à la fois, et une écriture
+// partielle laisserait une séance « course » sans course, ou l'inverse.
+func (d *DB) UpdateGoalSessions(
+	ctx context.Context,
+	userID, goalID primitive.ObjectID,
+	planned []models.PlannedSession,
+	overrides []models.SessionOverride,
+	races []models.GoalRace,
+) error {
+	set := bson.M{"planned_sessions": planned}
+	unset := bson.M{}
+	if len(overrides) > 0 {
+		set["session_overrides"] = overrides
+	} else {
+		unset["session_overrides"] = ""
+	}
+	if len(races) > 0 {
+		set["races"] = races
+	} else {
+		unset["races"] = ""
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	return d.updateGoal(ctx, userID, goalID, update)
+}
+
+// SetGoalSessionSteps garde les étapes calculées pour la montre sur une séance.
+func (d *DB) SetGoalSessionSteps(ctx context.Context, userID, goalID primitive.ObjectID, week, session int, steps []models.WorkoutStep) error {
+	res, err := d.goals.UpdateOne(ctx,
+		bson.M{"_id": goalID, "user_id": userID, "planned_sessions": bson.M{"$elemMatch": bson.M{"week": week, "session": session}}},
+		bson.M{"$set": bson.M{"planned_sessions.$.steps": steps}},
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetGoalCoachNotes remplace ce que le coach a retenu de la personne.
+func (d *DB) SetGoalCoachNotes(ctx context.Context, userID, goalID primitive.ObjectID, notes []string) error {
+	if len(notes) == 0 {
+		return d.updateGoal(ctx, userID, goalID, bson.M{"$unset": bson.M{"coach_notes": ""}})
+	}
+	return d.updateGoal(ctx, userID, goalID, bson.M{"$set": bson.M{"coach_notes": notes}})
+}
+
+// SetGoalInsight garde la dernière synthèse du coach.
+func (d *DB) SetGoalInsight(ctx context.Context, userID, goalID primitive.ObjectID, in *models.GoalInsight) error {
+	return d.updateGoal(ctx, userID, goalID, bson.M{"$set": bson.M{"insight": in}})
+}
+
+// SetGoalRace enregistre l'épreuve visée : son nom, si elle est officielle, et ce
+// qu'on a pu en apprendre. info nil efface les renseignements.
+func (d *DB) SetGoalRace(ctx context.Context, userID, goalID primitive.ObjectID, name string, official bool, info *models.RaceInfo) error {
+	set := bson.M{"race_official": official}
+	unset := bson.M{}
+	if name != "" {
+		set["race_name"] = name
+	} else {
+		unset["race_name"] = ""
+	}
+	if info != nil {
+		set["race_info"] = info
+	} else {
+		unset["race_info"] = ""
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	return d.updateGoal(ctx, userID, goalID, update)
+}
+
+func (d *DB) updateGoal(ctx context.Context, userID, goalID primitive.ObjectID, update bson.M) error {
+	res, err := d.goals.UpdateOne(ctx, bson.M{"_id": goalID, "user_id": userID}, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
