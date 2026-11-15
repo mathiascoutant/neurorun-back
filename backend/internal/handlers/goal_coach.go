@@ -64,21 +64,23 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasStravaData := u.HasStrava()
-	actsJSON := []byte("[]")
-	if hasStravaData {
-		access, err := h.ensureStravaAccess(r.Context(), u)
+	access := ""
+	if u.HasStrava() {
+		a, err := h.ensureStravaAccess(r.Context(), u)
 		if err != nil {
 			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
-		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
-		if err != nil {
-			h.writeStravaError(w, r, u, err, "erreur Strava")
-			return
-		}
-		actsJSON, _ = json.Marshal(acts)
+		access = a
 	}
+	acts, err := h.coachActivities(r.Context(), u, access)
+	if err != nil {
+		h.writeStravaError(w, r, u, err, "erreur Strava")
+		return
+	}
+	// « Avec données » : dès qu'il y a des sorties, Strava ou courses NeuroRun.
+	hasStravaData := len(acts) > 0
+	actsJSON, _ := json.Marshal(acts)
 
 	loc, _ := calendarLocation()
 	tools := &goalCoachTools{
@@ -247,9 +249,9 @@ func (t *goalCoachTools) systemPrompt(hasStravaData bool) string {
 		planCtx = planCtx[:goalCoachPlanContextMax] + "\n… (suite du plan omise pour le contexte)"
 	}
 
-	activitiesBlock := "**Activités récentes (JSON)**\n" + string(t.actsJSON)
+	activitiesBlock := "**Sorties de la personne (JSON)** — ses activités Strava récentes, ses plus longues courses des deux dernières années (champ `note`) et ses courses enregistrées avec NeuroRun (`source`)\n" + string(t.actsJSON)
 	if !hasStravaData {
-		activitiesBlock = "**Historique Strava** : non importé — base tes réponses sur l’objectif et le plan ci-dessus. Tu peux mentionner qu’associer Strava permet d’aligner les conseils sur le volume et l’allure réels, sans insister."
+		activitiesBlock = "**Sorties** : aucune pour l'instant, ni sur Strava ni dans l'app — base tes réponses sur l’objectif et le plan ci-dessus. Tu peux mentionner qu’enregistrer ses courses avec l'app ou associer Strava permet d’aligner les conseils sur le volume et l’allure réels, sans insister."
 	}
 
 	return `Tu es le coach course à pied personnel de cette personne. Tu la suis sur toute sa préparation : tu connais son objectif, son plan, ce qu'elle a réellement couru et ce qu'elle t'a déjà dit. Tu écris en français.

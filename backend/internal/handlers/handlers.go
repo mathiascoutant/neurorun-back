@@ -1463,23 +1463,23 @@ func (h *Handlers) CreateGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasStravaData := u.HasStrava()
-	var actsJSON []byte
-	if hasStravaData {
-		access, err := h.ensureStravaAccess(r.Context(), u)
+	access := ""
+	if u.HasStrava() {
+		a, err := h.ensureStravaAccess(r.Context(), u)
 		if err != nil {
 			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
-		acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
-		if err != nil {
-			h.writeStravaError(w, r, u, err, "erreur Strava")
-			return
-		}
-		actsJSON, _ = json.Marshal(acts)
-	} else {
-		actsJSON = []byte("[]")
+		access = a
 	}
+	acts, err := h.coachActivities(r.Context(), u, access)
+	if err != nil {
+		h.writeStravaError(w, r, u, err, "erreur Strava")
+		return
+	}
+	// « Avec données » : dès qu'il y a des sorties, Strava ou courses NeuroRun.
+	hasStravaData := len(acts) > 0
+	actsJSON, _ := json.Marshal(acts)
 
 	g := b.newGoal(u, label, distKm, targetTime)
 	h.fillRaceClimate(r.Context(), g)
@@ -1536,7 +1536,7 @@ func (h *Handlers) ReplanGoalWithStrava(w http.ResponseWriter, r *http.Request) 
 		h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 		return
 	}
-	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+	acts, err := h.coachActivities(r.Context(), u, access)
 	if err != nil {
 		h.writeStravaError(w, r, u, err, "erreur Strava")
 		return

@@ -223,7 +223,7 @@ func (h *Handlers) ReplanGoalWithStravaStream(w http.ResponseWriter, r *http.Req
 		fail("impossible d’accéder à Strava", "")
 		return
 	}
-	acts, err := h.strava.ActivitiesSummary(r.Context(), access, 50)
+	acts, err := h.coachActivities(r.Context(), u, access)
 	if err != nil {
 		h.forgetStravaIfRevoked(r.Context(), u, err)
 		if errors.Is(err, strava.ErrUnauthorized) {
@@ -289,31 +289,29 @@ func (h *Handlers) CreateGoalStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	total := planTotalUnits(b.Weeks)
-	hasStravaData := u.HasStrava()
+	sse.send(planProgress{Done: 0, Total: total, Label: "Lecture de tes sorties"})
 
-	actsJSON := []byte("[]")
-	if hasStravaData {
-		sse.send(planProgress{Done: 0, Total: total, Label: "Lecture de tes sorties Strava"})
-		access, err := h.ensureStravaAccess(r.Context(), u)
-		if err == nil {
-			var acts any
-			acts, err = h.strava.ActivitiesSummary(r.Context(), access, 50)
-			if err == nil {
-				actsJSON, _ = json.Marshal(acts)
-			}
-		}
-		if err != nil {
-			h.forgetStravaIfRevoked(r.Context(), u, err)
-			if errors.Is(err, strava.ErrUnauthorized) {
-				fail("l’accès à Strava a été révoqué : réassocie ton compte", stravaUnlinkedCode)
-				return
-			}
-			fail("impossible de lire tes sorties Strava", "")
+	access := ""
+	var err error
+	if u.HasStrava() {
+		access, err = h.ensureStravaAccess(r.Context(), u)
+	}
+	var acts []map[string]any
+	if err == nil {
+		acts, err = h.coachActivities(r.Context(), u, access)
+	}
+	if err != nil {
+		h.forgetStravaIfRevoked(r.Context(), u, err)
+		if errors.Is(err, strava.ErrUnauthorized) {
+			fail("l’accès à Strava a été révoqué : réassocie ton compte", stravaUnlinkedCode)
 			return
 		}
-	} else {
-		sse.send(planProgress{Done: 0, Total: total, Label: "Préparation du plan"})
+		fail("impossible de lire tes sorties Strava", "")
+		return
 	}
+	// « Avec données » : dès qu'il y a des sorties, Strava ou courses NeuroRun.
+	hasStravaData := len(acts) > 0
+	actsJSON, _ := json.Marshal(acts)
 
 	g := b.newGoal(u, label, distKm, targetTime)
 	h.fillRaceClimate(r.Context(), g)

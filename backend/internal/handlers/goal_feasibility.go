@@ -854,3 +854,54 @@ func actsForPrompt(acts []map[string]any) []map[string]any {
 	}
 	return append(out, rest...)
 }
+
+// olderLongRunsMax : sorties longues plus anciennes ajoutées à l'historique du coach.
+const olderLongRunsMax = 6
+
+// coachActivities : ce que le coach et la rédaction du plan savent des sorties de
+// la personne.
+//
+// Les cinquante dernières activités Strava (tous sports : une sortie vélo la veille
+// compte) ne suffisent pas : un semi couru il y a dix-huit mois en sort vite. On y
+// ajoute les plus longues courses des deux dernières années, puis les courses
+// NeuroRun qui ne sont pas déjà sur Strava. `access` vide = compte Strava non lié.
+//
+// Seule la lecture des activités récentes peut échouer : le reste est du mieux
+// possible, pour qu'une panne partielle ne prive pas la personne de son coach.
+func (h *Handlers) coachActivities(ctx context.Context, u *models.User, access string) ([]map[string]any, error) {
+	now := time.Now().UTC()
+	var acts []map[string]any
+	if access != "" {
+		recent, err := h.strava.ActivitiesSummary(ctx, access, 50)
+		if err != nil {
+			return nil, err
+		}
+		acts = recent
+		seen := make(map[string]bool, len(recent))
+		for _, a := range recent {
+			if d, _ := a["start_date"].(string); d != "" {
+				seen[d] = true
+			}
+		}
+		after := now.AddDate(0, 0, -feasibilityHistoryDays).Unix()
+		if runs, err := h.strava.FetchRunActivities(ctx, access, &after); err == nil {
+			var older []map[string]any
+			for _, a := range runActivitiesAsActs(runs) {
+				if d, _ := a["start_date"].(string); !seen[d] {
+					older = append(older, a)
+				}
+			}
+			sort.SliceStable(older, func(i, j int) bool {
+				return actFloat(older[i]["distance_km"]) > actFloat(older[j]["distance_km"])
+			})
+			if len(older) > olderLongRunsMax {
+				older = older[:olderLongRunsMax]
+			}
+			for _, a := range older {
+				a["note"] = "sortie longue plus ancienne, hors des 50 dernières activités"
+				acts = append(acts, a)
+			}
+		}
+	}
+	return h.runHistory(ctx, u, acts, now), nil
+}
