@@ -209,3 +209,42 @@ func TestAssessFeasibilityStaleRunsAndVmaTest(t *testing.T) {
 		t.Errorf("le test de VMA ne doit pas dégrader le haut de la fourchette : %v contre %v", avec.SlowSec, sans.SlowSec)
 	}
 }
+
+// Le cas remonté ensuite : un 15 km récent et un semi couru il y a dix-huit mois.
+// Le 15 km doit servir de repère, pas une sortie de 3 km plus rapide ; le semi
+// ancien doit apparaître comme la plus longue sortie des deux ans.
+func TestAssessFeasibilityUsesLongRunsAndOldHalf(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	acts := []map[string]any{
+		sortieLe(3, 14.3, now.AddDate(0, 0, -10)), // rapide mais courte
+		sortieLe(15, 87, now.AddDate(0, 0, -30)),  // 5:48/km sur 15 km
+		sortieLe(8, 46, now.AddDate(0, 0, -18)),
+		sortieLe(6, 34, now.AddDate(0, 0, -45)),
+		sortieLe(21.1, 122, now.AddDate(0, -18, 0)), // semi en 2h02, il y a 18 mois
+		sortieLe(10, 50, now.AddDate(-3, 0, 0)),     // trop ancien : ignoré
+	}
+	f := assessFeasibilityAt(acts, nil, 42, "4h30", 16, 3, false, now)
+
+	if f.Reference == nil || f.Reference.DistanceKm != 15 {
+		t.Fatalf("sortie la plus probante : %+v, attendu les 15 km", f.Reference)
+	}
+	if f.LongestEver == nil || f.LongestEver.DistanceKm != 21.1 {
+		t.Fatalf("plus longue sortie sur deux ans : %+v, attendu le semi", f.LongestEver)
+	}
+	if f.RunsAnalyzed != 5 {
+		t.Errorf("%d sorties comptées, attendu 5 (celle de trois ans est hors période)", f.RunsAnalyzed)
+	}
+	// Fourchette nettement plus serrée que depuis 3 km seuls (où elle dépasse 20 %).
+	if w := f.SlowSec/f.FastSec - 1; w > 0.17 {
+		t.Errorf("fourchette trop large avec un 15 km récent : %.0f %% (%s – %s)", w*100, f.FastLabel, f.SlowLabel)
+	}
+	if f.Reliability == ReliabilityGood {
+		t.Errorf("15 km pour juger un marathon ne donne pas une fiabilité « bonne »")
+	}
+	facts := factsForPrompt(f)
+	for _, want := range []string{"15,0 km", "deux dernières années : 21,1 km", "Tu as déjà couru 21,1 km"} {
+		if !strings.Contains(facts, want) {
+			t.Errorf("faits sans %q :\n%s", want, facts)
+		}
+	}
+}

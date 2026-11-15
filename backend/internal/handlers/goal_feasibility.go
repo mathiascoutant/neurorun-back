@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"runapp/internal/goalcalendar"
 	"runapp/internal/models"
+	"runapp/internal/strava"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +79,10 @@ type FeasibilityFacts struct {
 	AllowedPct   float64         `json:"allowed_pct"`
 	Reference    *FeasibilityRun `json:"reference_run,omitempty"`
 	LongestRunKm float64         `json:"longest_run_km"`
+	// LongestEver : la plus longue sortie des deux dernières années, quand elle
+	// dépasse la plus longue récente. Avoir déjà couru la distance compte, même
+	// si la forme d'alors n'est plus celle d'aujourd'hui.
+	LongestEver *FeasibilityRun `json:"longest_ever,omitempty"`
 	// WeeklyKm : volume moyen des quatre dernières semaines ; 0 si inconnu.
 	WeeklyKm float64 `json:"weekly_km"`
 	// RecentRuns : sorties des 90 derniers jours prises en compte.
@@ -196,8 +202,16 @@ func allowedProgress(weeks, sessionsPerWeek int) float64 {
 }
 
 const (
-	// feasibilityRecentDays : au-delà, une sortie ne dit plus le niveau d'aujourd'hui.
+	// feasibilityRecentDays : au-delà, une sortie ne dit plus à elle seule le niveau
+	// d'aujourd'hui. Elle reste un indice, d'autant plus faible qu'elle est ancienne.
 	feasibilityRecentDays = 90
+	// feasibilityHistoryDays : jusqu'où l'on remonte pour savoir ce que la personne
+	// a déjà couru (un semi il y a dix-huit mois compte pour l'endurance).
+	feasibilityHistoryDays = 730
+	// stalePerMonth / staleMax : ce qu'on retire au crédit d'une sortie ancienne, par
+	// mois au-delà de trois, plafonné. La forme se perd, mais pas en un jour.
+	stalePerMonth = 0.015
+	staleMax      = 0.25
 	// enduranceDoubt : ce qu'on perd, au pire, à extrapoler vers plus long. Le
 	// modèle suppose une endurance entraînée (exposant de Riegel proche de 1,08) ;
 	// un coureur qui n'a jamais couru la distance se rapproche de 1,15. L'écart
@@ -239,9 +253,13 @@ func assessFeasibilityAt(
 		vma    float64
 		km     float64
 		recent bool
-		run    *FeasibilityRun
+		// stale : ce qu'il faut ajouter au temps « acquis » d'une sortie ancienne.
+		stale float64
+		run   *FeasibilityRun
 	}
 	recentFrom := now.AddDate(0, 0, -feasibilityRecentDays)
+	historyFrom := now.AddDate(0, 0, -feasibilityHistoryDays)
+	var longestEver *FeasibilityRun
 	monthFrom := now.AddDate(0, 0, -28)
 	var all []candidate
 	var kmLast28, longestRecent, longestAny float64
@@ -255,21 +273,30 @@ func assessFeasibilityAt(
 		if km <= 0 || min <= 0 {
 			continue
 		}
-		f.RunsAnalyzed++
 		name, _ := a["name"].(string)
 		date, _ := a["start_date"].(string)
 		// Une sortie sans date est tenue pour récente : mieux vaut la compter que l'ignorer.
 		recent := true
+		stale := 0.0
 		if t, err := time.Parse(time.RFC3339, date); err == nil {
+			if t.Before(historyFrom) {
+				continue
+			}
 			dated = true
 			recent = !t.Before(recentFrom)
+			if !recent {
+				months := recentFrom.Sub(t).Hours() / (24 * 30.4)
+				stale = math.Min(staleMax, stalePerMonth*months)
+			}
 			if !t.Before(monthFrom) {
 				kmLast28 += km
 			}
 			date = t.Format("2006-01-02")
 		}
+		f.RunsAnalyzed++
 		if km > longestAny {
 			longestAny = km
+			longestEver = &FeasibilityRun{Name: name, Date: date, DistanceKm: km, TimeSec: math.Round(min * 60)}
 		}
 		if recent {
 			f.RecentRuns++
@@ -281,24 +308,28 @@ func assessFeasibilityAt(
 		if !vma.PlausibleVma(implied) {
 			continue
 		}
-		all = append(all, candidate{implied, km, recent, &FeasibilityRun{Name: name, Date: date, DistanceKm: km, TimeSec: math.Round(min * 60)}})
+		all = append(all, candidate{implied, km, recent, stale, &FeasibilityRun{Name: name, Date: date, DistanceKm: km, TimeSec: math.Round(min * 60)}})
 	}
 	if dated {
 		f.WeeklyKm = math.Round(kmLast28/4*10) / 10
 	}
 
-	// Les sorties récentes font foi ; à défaut seulement, on remonte plus loin.
-	stale := false
-	var runs []candidate
+	// Les sorties récentes disent la forme du jour. Les plus anciennes restent des
+	// indices : elles peuvent resserrer le haut de la fourchette (on a déjà tenu
+	// cette allure sur cette distance), avec un crédit qui baisse avec l'âge.
+	stale := true
 	for _, c := range all {
 		if c.recent {
-			runs = append(runs, c)
+			stale = false
+			break
 		}
 	}
+	runs := all
 	f.LongestRunKm = longestRecent
-	if len(runs) == 0 && len(all) > 0 {
-		runs, stale = all, true
+	if stale {
 		f.LongestRunKm = longestAny
+	} else if longestEver != nil && longestAny > longestRecent {
+		f.LongestEver = longestEver
 	}
 	if test != nil && vma.PlausibleVma(test.Kmh) && !test.At.Before(now.AddDate(0, 0, -2*feasibilityRecentDays)) {
 		f.VmaKmh = math.Round(test.Kmh*10) / 10
@@ -306,7 +337,7 @@ func assessFeasibilityAt(
 		if km <= 0 {
 			km = test.Kmh / 10 // six minutes à la VMA
 		}
-		runs = append(runs, candidate{vma: test.Kmh, km: km, recent: true})
+		runs = append(append([]candidate(nil), runs...), candidate{vma: test.Kmh, km: km, recent: true})
 	}
 
 	// Plus une sortie est courte, plus l'extrapolation est optimiste : 1,5 km vite
@@ -332,7 +363,10 @@ func assessFeasibilityAt(
 		if c.km < goalKm {
 			slow = fast * math.Pow(goalKm/c.km, enduranceDoubt)
 		}
-		if f.FastSec == 0 || fast < f.FastSec {
+		slow *= 1 + c.stale
+		// Le bas de la fourchette se lit sur la forme du jour : une sortie ancienne
+		// ne le fixe que s'il n'y a rien de récent.
+		if (c.recent || stale) && (f.FastSec == 0 || fast < f.FastSec) {
 			f.FastSec = fast
 		}
 		if f.SlowSec == 0 || slow < f.SlowSec {
@@ -340,7 +374,7 @@ func assessFeasibilityAt(
 			ref = c
 		}
 	}
-	if f.FastSec > f.SlowSec {
+	if f.FastSec == 0 || f.FastSec > f.SlowSec {
 		f.FastSec = f.SlowSec
 	}
 	if ref != nil {
@@ -359,7 +393,9 @@ func assessFeasibilityAt(
 			f.ReliabilityWhy = "tes dernières sorties datent de plus de trois mois"
 		case width > 0.10:
 			f.Reliability = ReliabilityLow
-			if ref.run != nil {
+			if ref.run != nil && !ref.recent {
+				f.ReliabilityWhy = fmt.Sprintf("ta sortie la plus probante (%s) date du %s", kmFR(ref.run.DistanceKm), frDay(ref.run.Date))
+			} else if ref.run != nil {
 				f.ReliabilityWhy = fmt.Sprintf("ta sortie la plus probante fait %s, loin des %s de la course", kmFR(ref.run.DistanceKm), kmFR(goalKm))
 			} else {
 				f.ReliabilityWhy = fmt.Sprintf("elle repose sur ton test de VMA, sans sortie proche des %s de la course", kmFR(goalKm))
@@ -393,8 +429,14 @@ func assessFeasibilityAt(
 		f.Warnings = append(f.Warnings, "Tes dernières sorties ont plus de trois mois : ton niveau a pu changer depuis.")
 	}
 	if goalKm >= 21 && f.LongestRunKm > 0 && f.LongestRunKm < goalKm*0.4 {
-		f.Warnings = append(f.Warnings, fmt.Sprintf(
-			"Ta plus longue sortie récente fait %s : tenir la distance est le vrai chantier de cette préparation, bien avant la vitesse.", kmFR(f.LongestRunKm)))
+		if f.LongestEver != nil && f.LongestEver.DistanceKm >= goalKm*0.4 {
+			f.Warnings = append(f.Warnings, fmt.Sprintf(
+				"Tu as déjà couru %s (le %s), mais ta plus longue sortie des trois derniers mois fait %s : l'endurance longue reste le vrai chantier de cette préparation.",
+				kmFR(f.LongestEver.DistanceKm), frDay(f.LongestEver.Date), kmFR(f.LongestRunKm)))
+		} else {
+			f.Warnings = append(f.Warnings, fmt.Sprintf(
+				"Ta plus longue sortie récente fait %s : tenir la distance est le vrai chantier de cette préparation, bien avant la vitesse.", kmFR(f.LongestRunKm)))
+		}
 	}
 	if goalKm >= 21 && dated && f.WeeklyKm < goalKm*0.5 {
 		f.Warnings = append(f.Warnings, fmt.Sprintf(
@@ -518,7 +560,11 @@ func factsForPrompt(f FeasibilityFacts) string {
 		b.WriteString("- Course en trail : le dénivelé ralentit l'allure, la comparaison avec des sorties sur route est indicative.\n")
 	}
 	if f.LongestRunKm > 0 {
-		fmt.Fprintf(&b, "- Plus longue sortie récente : %s.\n", kmFR(f.LongestRunKm))
+		fmt.Fprintf(&b, "- Plus longue sortie des trois derniers mois : %s.\n", kmFR(f.LongestRunKm))
+	}
+	if f.LongestEver != nil {
+		fmt.Fprintf(&b, "- Plus longue sortie des deux dernières années : %s en %s, le %s.\n",
+			kmFR(f.LongestEver.DistanceKm), formatDuration(f.LongestEver.TimeSec), frDay(f.LongestEver.Date))
 	}
 	if f.TargetSec > 0 && f.PredictedSec > 0 {
 		switch {
@@ -628,11 +674,16 @@ func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 			h.writeStravaError(w, r, u, err, "impossible d'accéder à Strava, reconnectez le compte")
 			return
 		}
-		stravaActs, err = h.strava.ActivitiesSummary(r.Context(), access, 50)
+		// Deux ans de courses, pas les cinquante dernières activités : un semi couru
+		// il y a dix-huit mois dit quelque chose de l'endurance, et il serait sinon
+		// noyé sous les sorties récentes (ou les autres sports).
+		after := time.Now().AddDate(0, 0, -feasibilityHistoryDays).Unix()
+		runs, err := h.strava.FetchRunActivities(r.Context(), access, &after)
 		if err != nil {
 			h.writeStravaError(w, r, u, err, "erreur Strava")
 			return
 		}
+		stravaActs = runActivitiesAsActs(runs)
 	}
 	now := time.Now().UTC()
 	acts := h.runHistory(r.Context(), u, stravaActs, now)
@@ -640,7 +691,7 @@ func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 	// Le verdict se calcule sur les sorties ; le coach ne fait que l'expliquer.
 	facts := assessFeasibilityAt(acts, test, distKm, targetTime, b.Weeks, b.SessionsPerWeek, b.Terrain == models.GoalTerrainTrail, now)
 
-	system, userQ := feasibilityPrompts(label, b.Terrain, targetTime, b.Weeks, b.SessionsPerWeek, facts, acts)
+	system, userQ := feasibilityPrompts(label, b.Terrain, targetTime, b.Weeks, b.SessionsPerWeek, facts, actsForPrompt(acts))
 	text, err := h.ai.Chat(r.Context(), system, userQ)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
@@ -742,4 +793,49 @@ func frDay(iso string) string {
 		return iso
 	}
 	return fmt.Sprintf("%d %s %d", t.Day(), frMonths[t.Month()-1], t.Year())
+}
+
+// runActivitiesAsActs présente des courses Strava sous la forme du résumé lu par le
+// calcul et par le coach.
+func runActivitiesAsActs(runs []strava.RunActivity) []map[string]any {
+	out := make([]map[string]any, 0, len(runs))
+	for _, r := range runs {
+		if r.DistanceM <= 0 || r.MovingSec <= 0 {
+			continue
+		}
+		out = append(out, map[string]any{
+			"name":             r.Name,
+			"type":             "Run",
+			"start_date":       r.StartAt.UTC().Format(time.RFC3339),
+			"distance_km":      math.Round(r.DistanceM/10) / 100,
+			"moving_time_min":  math.Round(float64(r.MovingSec)/6) / 10,
+			"elevation_gain_m": math.Round(r.ElevGainM),
+		})
+	}
+	return out
+}
+
+// actsForPrompt borne ce que le coach lit : les sorties les plus récentes pour la
+// régularité, et les plus longues des deux ans pour l'endurance. Les chiffres qui
+// comptent sont déjà dans les faits calculés ; la liste ne sert qu'au contexte.
+func actsForPrompt(acts []map[string]any) []map[string]any {
+	const recentMax, longestMax = 30, 6
+	if len(acts) <= recentMax {
+		return acts
+	}
+	byDate := append([]map[string]any(nil), acts...)
+	sort.SliceStable(byDate, func(i, j int) bool {
+		a, _ := byDate[i]["start_date"].(string)
+		b, _ := byDate[j]["start_date"].(string)
+		return a > b
+	})
+	out := append([]map[string]any(nil), byDate[:recentMax]...)
+	rest := append([]map[string]any(nil), byDate[recentMax:]...)
+	sort.SliceStable(rest, func(i, j int) bool {
+		return actFloat(rest[i]["distance_km"]) > actFloat(rest[j]["distance_km"])
+	})
+	if len(rest) > longestMax {
+		rest = rest[:longestMax]
+	}
+	return append(out, rest...)
 }
