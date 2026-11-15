@@ -3,6 +3,7 @@ package handlers
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseTargetSeconds(t *testing.T) {
@@ -130,5 +131,81 @@ func TestAssessFeasibilityLongDistanceNeedsEndurance(t *testing.T) {
 	f := assessFeasibility(acts, 42.195, "5h", 12, 4, false)
 	if f.Verdict != VerdictStretch {
 		t.Errorf("marathon sans sortie longue : %q, attendu %q", f.Verdict, VerdictStretch)
+	}
+}
+
+func sortieLe(km, min float64, at time.Time) map[string]any {
+	return map[string]any{"type": "Run", "distance_km": km, "moving_time_min": min, "start_date": at.Format(time.RFC3339)}
+}
+
+// Le cas remonté : un marathon jugé sur une sortie de 3 km. L'ancien calcul
+// annonçait « 4h11'42 » ; on veut une fourchette large, dite fragile, et des
+// points d'attention sur l'endurance et le volume.
+func TestAssessFeasibilityMarathonFromShortRun(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	// 3 km en 14'18 : le modèle en tire environ 4h12 sur marathon.
+	acts := []map[string]any{sortieLe(3, 14.3, now.AddDate(0, 0, -10))}
+	f := assessFeasibilityAt(acts, nil, 42, "4h30", 16, 3, false, now)
+
+	if f.Reliability != ReliabilityLow {
+		t.Fatalf("fiabilité %q, attendu faible", f.Reliability)
+	}
+	if f.SlowSec < f.FastSec*1.15 {
+		t.Errorf("fourchette trop étroite pour 3 km → marathon : %v à %v s", f.FastSec, f.SlowSec)
+	}
+	if f.FastLabel == f.SlowLabel || strings.Contains(f.FastLabel, "'") || strings.Contains(f.SlowLabel, "'") {
+		t.Errorf("fourchette attendue arrondie, sans secondes : %q – %q", f.FastLabel, f.SlowLabel)
+	}
+	if f.Verdict != VerdictStretch {
+		t.Errorf("verdict %q, attendu %q", f.Verdict, VerdictStretch)
+	}
+	facts := factsForPrompt(f)
+	for _, want := range []string{"entre ", "Fiabilité de cette estimation : faible", "POINTS D'ATTENTION", "plus longue sortie", "par semaine"} {
+		if !strings.Contains(facts, want) {
+			t.Errorf("faits sans %q :\n%s", want, facts)
+		}
+	}
+}
+
+// Une sortie longue récente resserre la fourchette et rend l'avis fiable.
+func TestAssessFeasibilityGoodReliability(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	var acts []map[string]any
+	for i := 0; i < 6; i++ {
+		acts = append(acts, sortieLe(10, 55, now.AddDate(0, 0, -7*i-2)))
+	}
+	acts = append(acts, sortieLe(18, 104, now.AddDate(0, 0, -5)))
+	f := assessFeasibilityAt(acts, nil, 21, "2h00", 12, 4, false, now)
+	if f.Reliability != ReliabilityGood {
+		t.Fatalf("fiabilité %q (%s), attendu bonne — fourchette %v à %v", f.Reliability, f.ReliabilityWhy, f.FastSec, f.SlowSec)
+	}
+	if f.Reference == nil || f.Reference.DistanceKm != 18 {
+		t.Errorf("sortie la plus probante : %+v, attendu les 18 km", f.Reference)
+	}
+	if len(f.Warnings) != 0 {
+		t.Errorf("aucun point d'attention attendu : %v", f.Warnings)
+	}
+}
+
+// Des sorties de plus de trois mois ne disent plus le niveau du jour ; le test de
+// VMA, mesure directe, fixe le bas de la fourchette.
+func TestAssessFeasibilityStaleRunsAndVmaTest(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	old := []map[string]any{sortieLe(10, 50, now.AddDate(0, 0, -200))}
+	f := assessFeasibilityAt(old, nil, 10, "48 min", 10, 3, false, now)
+	if f.Reliability != ReliabilityLow || len(f.Warnings) == 0 || !strings.Contains(f.Warnings[0], "trois mois") {
+		t.Fatalf("sorties anciennes : fiabilité %q, points %v", f.Reliability, f.Warnings)
+	}
+
+	recent := []map[string]any{sortieLe(10, 55, now.AddDate(0, 0, -6))}
+	sans := assessFeasibilityAt(recent, nil, 10, "48 min", 10, 3, false, now)
+	avec := assessFeasibilityAt(recent, &VmaReference{Kmh: 15, At: now.AddDate(0, 0, -20), Km: 1.5}, 10, "48 min", 10, 3, false, now)
+	if avec.VmaKmh != 15 || avec.FastSec >= sans.FastSec {
+		t.Errorf("le test de VMA doit abaisser le bas de la fourchette : %v contre %v", avec.FastSec, sans.FastSec)
+	}
+	// Un footing n'est pas couru à fond : le test peut aussi resserrer le haut,
+	// jamais l'élargir.
+	if avec.SlowSec > sans.SlowSec {
+		t.Errorf("le test de VMA ne doit pas dégrader le haut de la fourchette : %v contre %v", avec.SlowSec, sans.SlowSec)
 	}
 }
