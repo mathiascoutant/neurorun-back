@@ -228,7 +228,7 @@ func (h *Handlers) StravaRaceForecastAdjust(w http.ResponseWriter, r *http.Reque
 	// La météo d'abord : le ressenti et la blessure s'appliquent au chrono du jour.
 	base := applyForecastWeather(strava.BuildRaceForecast(runs), cond)
 
-	aiKey := strings.TrimSpace(h.cfg.OpenAIAPIKey) != ""
+	aiKey := strings.TrimSpace(h.cfg.AnthropicAPIKey) != ""
 	var fac forecastFactorsJSON
 	var aiErr error
 	aiUsed := false
@@ -254,7 +254,7 @@ Chaque number est un facteur multiplicateur sur le temps prévu (1.0 = inchangé
 Adapte légèrement par distance si pertinent (ex. blessure : impact plus marqué sur le marathon).
 Reste réaliste : facteurs entre 0.9 et 1.18. rationale_fr : 1 à 2 phrases en français.`
 
-		raw, err := h.openai.Chat(r.Context(), "Tu réponds uniquement en JSON minimal, sans balises.", prompt)
+		raw, err := h.ai.Chat(r.Context(), "Tu réponds uniquement en JSON minimal, sans balises.", prompt)
 		if err != nil {
 			aiErr = err
 		} else {

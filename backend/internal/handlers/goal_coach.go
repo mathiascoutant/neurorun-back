@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"runapp/internal/goalcalendar"
+	oai "runapp/internal/llm"
 	"runapp/internal/models"
-	oai "runapp/internal/openai"
 	"runapp/internal/store"
 
 	"github.com/go-chi/chi/v5"
@@ -195,10 +195,29 @@ func (h *Handlers) runGoalCoachTurn(
 		for _, call := range assistant.ToolCalls {
 			msgs = append(msgs, oai.ToolResultMessage(call.ID, tools.execute(r.Context(), call)))
 		}
-		// Le calendrier vient de changer : le contexte du premier message décrirait
-		// sinon un planning périmé, et le coach annoncerait de mauvaises dates.
-		msgs[0].Content = tools.systemPrompt(tools.hasStrava)
+		// Le calendrier vient de changer : le prompt système décrit désormais un
+		// planning périmé, et le coach annoncerait de mauvaises dates. On ajoute l'état
+		// à jour à la suite plutôt que de réécrire ce prompt : Claude refuse qu'on
+		// modifie le début d'une conversation dont il a déjà gardé la réflexion.
+		msgs = append(msgs, oai.ChatMessage{Role: "system", Content: tools.refreshNote()})
 	}
+}
+
+// refreshNote : l'objectif et le calendrier tels qu'ils sont après les actions du
+// tour, à lire à la place des sections du même nom du prompt système.
+func (t *goalCoachTools) refreshNote() string {
+	return "Mise à jour après tes actions — ces informations remplacent « Objectif enregistré » et « Calendrier actuel » du début.\n\n" +
+		t.goalSummary() + "\n**Calendrier actuel**\n" + t.scheduleContext()
+}
+
+func (t *goalCoachTools) goalSummary() string {
+	return `**Objectif enregistré**
+- Distance : ` + t.goal.DistanceLabel + `
+- Type de course : ` + models.GoalTerrainLabel(t.goal.EffectiveTerrain()) + `
+- Chrono visé : ` + t.goal.TargetTime + `
+- Délai : ` + strconv.Itoa(t.goal.Weeks) + ` semaine(s)` + raceDateLine(t.goal.RaceDate) + `
+- Séances / semaine : ` + strconv.Itoa(t.goal.SessionsPerWeek) + `
+`
 }
 
 // fallbackCoachReply évite le pire des cas : des modifications enregistrées sans
@@ -256,13 +275,7 @@ Tu suis L'OBJECTIF enregistré (distance, chrono, semaines, séances/semaine), s
 **Forme des réponses**
 3 à 8 phrases en général, ou quelques puces courtes. Quand tu as modifié le calendrier, dis précisément ce qui a changé, avec les jours et les dates. Quand tu parles d'une séance, décris-la d'après son contenu listé dans « Calendrier actuel » (distance, terrain, intensité), jamais d'après le type de l'objectif. Quand la personne parle de sa prochaine séance (ou la reporte), dis-lui en une ligne quelle paire mettre si une paire de la liste s'y prête mieux, ou si celle qu'elle porte d'habitude est usée. Si tu détailles une séance, donne des **allures min/km** et des **temps par répétition** pour du fractionné.
 
-**Objectif enregistré**
-- Distance : ` + t.goal.DistanceLabel + `
-- Type de course : ` + models.GoalTerrainLabel(t.goal.EffectiveTerrain()) + `
-- Chrono visé : ` + t.goal.TargetTime + `
-- Délai : ` + strconv.Itoa(t.goal.Weeks) + ` semaine(s)` + raceDateLine(t.goal.RaceDate) + `
-- Séances / semaine : ` + strconv.Itoa(t.goal.SessionsPerWeek) + `
-
+` + t.goalSummary() + `
 **Calendrier actuel**
 ` + t.scheduleContext() + `
 **Plan (référence)**

@@ -19,8 +19,8 @@ import (
 	"runapp/internal/config"
 	"runapp/internal/goalcalendar"
 	"runapp/internal/leaderboard"
+	oai "runapp/internal/llm"
 	"runapp/internal/models"
-	oai "runapp/internal/openai"
 	"runapp/internal/push"
 	"runapp/internal/scene3d"
 	"runapp/internal/store"
@@ -37,8 +37,9 @@ type Handlers struct {
 	cfg    *config.Config
 	db     *store.DB
 	strava *strava.Client
-	openai *oai.Client
-	// coachAI : même compte OpenAI, modèle des conversations avec la personne.
+	// ai : Claude pour les textes rédigés d'un bloc (plans, avis, extractions JSON).
+	ai *oai.Client
+	// coachAI : même compte Anthropic, modèle des conversations avec la personne.
 	coachAI *oai.Client
 	// sceneGenerator : modélisation 3D de la boutique. nil si ANTHROPIC_API_KEY n’est pas configurée.
 	sceneGenerator sceneGenerator
@@ -75,8 +76,8 @@ func New(cfg *config.Config, db *store.DB) *Handlers {
 		cfg:        cfg,
 		db:         db,
 		strava:     strava.New(cfg.StravaClientID, cfg.StravaClientSecret),
-		openai:     oai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel),
-		coachAI:    oai.New(cfg.OpenAIAPIKey, cfg.OpenAICoachModel),
+		ai:         oai.New(cfg.AnthropicAPIKey, cfg.AIModel),
+		coachAI:    oai.New(cfg.AnthropicAPIKey, cfg.AICoachModel),
 		pushClient: push.New(cfg.ExpoAccessToken),
 		weather:    weather.New(),
 	}
@@ -1494,7 +1495,7 @@ Une phrase simple qui résume pourquoi.
 2 ou 3 puces : ajuster le chrono, le délai ou le nombre de séances ; mentionner que lier Strava permet un avis plus précis.`
 	}
 
-	text, err := h.openai.Chat(r.Context(), system, userQ)
+	text, err := h.ai.Chat(r.Context(), system, userQ)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "erreur IA"})
 		return
@@ -1576,7 +1577,7 @@ func (h *Handlers) ReplanGoalWithStrava(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "strava non lié"})
 		return
 	}
-	if strings.TrimSpace(h.cfg.OpenAIAPIKey) == "" {
+	if strings.TrimSpace(h.cfg.AnthropicAPIKey) == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "génération indisponible"})
 		return
 	}

@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"runapp/internal/goalcalendar"
+	oai "runapp/internal/llm"
 	"runapp/internal/models"
-	oai "runapp/internal/openai"
 )
 
 // synthesizeTrainingPlan rédige le plan. `onProgress` est facultatif : quand il est
@@ -132,7 +132,7 @@ Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des 
 	var plan string
 	var err error
 	if onProgress == nil {
-		plan, err = h.openai.Chat(ctx, system, userQ)
+		plan, err = h.ai.Chat(ctx, system, userQ)
 	} else {
 		plan, err = h.streamPlan(ctx, system, userQ, weeks, onProgress)
 	}
@@ -145,7 +145,7 @@ Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des 
 	// plan encore incomplet après ça n'est pas enregistré.
 	plan, err = goalcalendar.CompletePlanWeeks(ctx, plan, weeks, spw,
 		func(ctx context.Context, current string, wanted []int) (string, error) {
-			return h.openai.ChatMessages(ctx, []oai.ChatMessage{
+			return h.ai.ChatMessages(ctx, []oai.ChatMessage{
 				{Role: "system", Content: system},
 				{Role: "user", Content: userQ},
 				{Role: "assistant", Content: current},
@@ -173,9 +173,9 @@ Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des 
 	}
 	// Une réponse mal comptée arrive de temps en temps : une relance coûte moins cher
 	// qu'un découpage relu sans le modèle, moins précis sur les allures.
-	planned, exErr := goalcalendar.ExtractPlannedSessions(ctx, h.openai, plan, weeks, spw)
+	planned, exErr := goalcalendar.ExtractPlannedSessions(ctx, h.ai, plan, weeks, spw)
 	if exErr != nil || len(planned) == 0 {
-		planned, exErr = goalcalendar.ExtractPlannedSessions(ctx, h.openai, plan, weeks, spw)
+		planned, exErr = goalcalendar.ExtractPlannedSessions(ctx, h.ai, plan, weeks, spw)
 	}
 	if exErr != nil || len(planned) == 0 {
 		planned = goalcalendar.FallbackPlannedSessionsFromPlan(plan, weeks, spw)

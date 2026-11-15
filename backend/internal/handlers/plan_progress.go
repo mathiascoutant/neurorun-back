@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	oai "runapp/internal/llm"
 	"runapp/internal/models"
-	oai "runapp/internal/openai"
 	"runapp/internal/strava"
 
 	"github.com/go-chi/chi/v5"
@@ -72,7 +72,7 @@ func (h *Handlers) streamPlan(
 	var seen strings.Builder
 	sections, weeksWritten, lastDone := 0, 0, 0
 
-	_, err := h.openai.ChatMessagesStream(ctx, []oai.ChatMessage{
+	_, err := h.ai.ChatMessagesStream(ctx, []oai.ChatMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: userQ},
 	}, func(delta string) {
@@ -194,7 +194,7 @@ func (h *Handlers) ReplanGoalWithStravaStream(w http.ResponseWriter, r *http.Req
 		fail("strava non lié", stravaUnlinkedCode)
 		return
 	}
-	if strings.TrimSpace(h.cfg.OpenAIAPIKey) == "" {
+	if strings.TrimSpace(h.cfg.AnthropicAPIKey) == "" {
 		fail("génération indisponible", "")
 		return
 	}

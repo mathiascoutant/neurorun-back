@@ -431,7 +431,7 @@ type scoreExplanationJSON struct {
 // déterministe : l'IA ne fait que la mettre en mots, et un secours prend le
 // relais si elle est indisponible.
 func (h *Handlers) explainScore(ctx context.Context, s *models.RunScore) *models.RunScoreExplanation {
-	if strings.TrimSpace(h.cfg.OpenAIAPIKey) != "" {
+	if strings.TrimSpace(h.cfg.AnthropicAPIKey) != "" {
 		if exp, err := h.explainScoreAI(ctx, s); err == nil {
 			return exp
 		}
@@ -562,7 +562,7 @@ Pas de généralités creuses, appuie-toi sur les chiffres fournis.`,
 		s.SpreadSec, signedSec(s.DriftSec),
 		rules)
 
-	raw, err := h.openai.Chat(ctx, "Tu réponds uniquement en JSON minimal, sans balises.", prompt)
+	raw, err := h.ai.Chat(ctx, "Tu réponds uniquement en JSON minimal, sans balises.", prompt)
 	if err != nil {
 		return nil, err
 	}

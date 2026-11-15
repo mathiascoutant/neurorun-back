@@ -10,8 +10,8 @@ import (
 	"unicode/utf8"
 
 	"runapp/internal/goalcalendar"
+	oai "runapp/internal/llm"
 	"runapp/internal/models"
-	oai "runapp/internal/openai"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )

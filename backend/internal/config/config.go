@@ -32,13 +32,13 @@ type Config struct {
 	StravaRedirectURI  string
 	FrontendURL        string
 	CORSAllowed        []string
-	OpenAIAPIKey       string
-	OpenAIModel        string
-	// OpenAICoachModel : modèle des conversations (chat et coach d'objectif), plus
-	// exigeantes que les textes générés d'un bloc.
-	OpenAICoachModel string
-	// Anthropic : modélisation 3D de la boutique. Sans clé, cette seule fonction est désactivée.
-	AnthropicAPIKey  string
+	// AnthropicAPIKey : Claude écrit les plans, les avis et les réponses du coach, et
+	// modélise les produits de la boutique en 3D.
+	AnthropicAPIKey string
+	// AIModel : textes rédigés d'un bloc (plans, faisabilité, extractions JSON).
+	AIModel string
+	// AICoachModel : conversations (chat et coach d'objectif, avec ses actions sur le calendrier).
+	AICoachModel     string
 	Anthropic3DModel string
 	// AdminEmail : à l’inscription, ce compte reçoit le rôle admin (comparaison insensible à la casse).
 	AdminEmail string
@@ -110,10 +110,9 @@ func Load() (*Config, error) {
 		StravaClientSecret: os.Getenv("STRAVA_CLIENT_SECRET"),
 		StravaRedirectURI:  os.Getenv("STRAVA_REDIRECT_URI"),
 		FrontendURL:        frontend,
-		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
-		OpenAIModel:        getenv("OPENAI_MODEL", "gpt-4o"),
-		OpenAICoachModel:   getenv("OPENAI_COACH_MODEL", "gpt-5.5"),
 		AnthropicAPIKey:    strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
+		AIModel:            getenv("ANTHROPIC_MODEL", "claude-opus-5-5"),
+		AICoachModel:       getenv("ANTHROPIC_COACH_MODEL", "claude-opus-5-5"),
 		Anthropic3DModel:   getenv("ANTHROPIC_3D_MODEL", "claude-opus-5-5"),
 		AdminEmail:         strings.TrimSpace(strings.ToLower(os.Getenv("ADMIN_EMAIL"))),
 
@@ -169,8 +168,8 @@ func Load() (*Config, error) {
 	if c.JWTSecret == "" || len(c.JWTSecret) < 16 {
 		return nil, fmt.Errorf("JWT_SECRET must be set (min 16 chars)")
 	}
-	if c.OpenAIAPIKey == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY is required")
+	if c.AnthropicAPIKey == "" {
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required")
 	}
 
 	return c, nil
