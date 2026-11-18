@@ -46,6 +46,8 @@ func (h *Handlers) loadGoalRuns(r *http.Request, u *models.User, g *models.Goal)
 			if gr.strava, err = h.strava.FetchRunActivities(ctx, access, &after); err != nil {
 				stravaErr = err
 				gr.strava = nil
+			} else {
+				gr.strava = withoutHiddenStrava(u, gr.strava)
 			}
 		}
 	}

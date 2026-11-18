@@ -37,8 +37,15 @@ func (d *DB) ClaimLiveRunStravaUpload(ctx context.Context, userID, runID primiti
 	return res.MatchedCount == 1, nil
 }
 
-// SetLiveRunStrava enregistre l'issue de l'envoi.
+// SetLiveRunStrava enregistre l'issue de l'envoi. ErrNotFound si la course a été
+// supprimée pendant l'envoi.
 func (d *DB) SetLiveRunStrava(ctx context.Context, runID primitive.ObjectID, s models.LiveRunStrava) error {
-	_, err := d.liveRuns.UpdateOne(ctx, bson.M{"_id": runID}, bson.M{"$set": bson.M{"strava": s}})
-	return err
+	res, err := d.liveRuns.UpdateOne(ctx, bson.M{"_id": runID}, bson.M{"$set": bson.M{"strava": s}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

@@ -77,6 +77,7 @@ func (h *Handlers) syncStravaRunsForShoes(ctx context.Context, u *models.User, s
 		log.Printf("chaussures: sorties Strava: %v", err)
 		return
 	}
+	acts = withoutHiddenStrava(u, acts)
 	if len(acts) == 0 {
 		return
 	}

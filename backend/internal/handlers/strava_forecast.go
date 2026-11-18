@@ -297,7 +297,7 @@ func (h *Handlers) gatherForecastRuns(ctx context.Context, u *models.User) []str
 			var acts []strava.RunActivity
 			acts, err = h.strava.FetchRunActivities(ctx, access, nil)
 			if err == nil {
-				runs = append(runs, acts...)
+				runs = append(runs, withoutHiddenStrava(u, acts)...)
 			}
 		}
 		h.forgetStravaIfRevoked(ctx, u, err)

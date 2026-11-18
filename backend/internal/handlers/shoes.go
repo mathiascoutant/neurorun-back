@@ -157,6 +157,7 @@ func (h *Handlers) ShoeHistoryKm(w http.ResponseWriter, r *http.Request) {
 		access, aerr := h.ensureStravaAccess(r.Context(), u)
 		if aerr == nil {
 			stravaRuns, aerr = h.strava.FetchRunActivities(r.Context(), access, &after)
+			stravaRuns = withoutHiddenStrava(u, stravaRuns)
 			stravaIncluded = aerr == nil
 		}
 		h.forgetStravaIfRevoked(r.Context(), u, aerr)

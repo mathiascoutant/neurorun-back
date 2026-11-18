@@ -764,6 +764,7 @@ func (h *Handlers) StravaDashboard(w http.ResponseWriter, r *http.Request) {
 			h.writeStravaError(w, r, u, ferr, "erreur Strava")
 			return
 		}
+		stravaRuns = withoutHiddenStrava(u, stravaRuns)
 	}
 
 	var liveAs []strava.RunActivity
@@ -1767,6 +1768,7 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Get("/live-runs/{id}", h.GetLiveRun)
 		pr.Get("/live-runs/{id}/score", h.GetLiveRunScore)
 		pr.Patch("/live-runs/{id}", h.RenameLiveRun)
+		pr.Delete("/live-runs/{id}", h.DeleteLiveRun)
 		pr.Put("/live-runs/{id}/shoe", h.SetLiveRunShoe)
 		pr.Post("/live-runs/{id}/strava", h.PushLiveRunToStrava)
 		// Chaussures : paires, usure théorique, paire portée à chaque course.

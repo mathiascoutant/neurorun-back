@@ -11,6 +11,7 @@ import (
 
 	"runapp/internal/goalcalendar"
 	"runapp/internal/models"
+	"runapp/internal/store"
 	"runapp/internal/strava"
 
 	"github.com/go-chi/chi/v5"
@@ -139,7 +140,17 @@ func (h *Handlers) pushRunToStrava(ctx context.Context, u *models.User, runID pr
 	// sinon la course reste « en cours » jusqu'à ce que le verrou expire.
 	saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := h.db.SetLiveRunStrava(saveCtx, runID, state); err != nil {
+	err = h.db.SetLiveRunStrava(saveCtx, runID, state)
+	if errors.Is(err, store.ErrNotFound) {
+		// Supprimée pendant l'envoi : sa copie toute neuve rejoint les masquées.
+		if activityID != 0 {
+			if err := h.db.HideStravaActivity(saveCtx, u.ID, activityID); err != nil {
+				log.Printf("strava: masquage de %d: %v", activityID, err)
+			}
+		}
+		return
+	}
+	if err != nil {
 		log.Printf("strava: état de la course %s: %v", runID.Hex(), err)
 	}
 }

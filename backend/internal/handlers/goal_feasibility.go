@@ -698,7 +698,7 @@ func (h *Handlers) GoalFeasibility(w http.ResponseWriter, r *http.Request) {
 			h.writeStravaError(w, r, u, err, "erreur Strava")
 			return
 		}
-		stravaActs = runActivitiesAsActs(runs)
+		stravaActs = runActivitiesAsActs(withoutHiddenStrava(u, runs))
 	}
 	now := time.Now().UTC()
 	acts := h.runHistory(r.Context(), u, stravaActs, now)
@@ -886,7 +886,7 @@ func (h *Handlers) coachActivities(ctx context.Context, u *models.User, access s
 		after := now.AddDate(0, 0, -feasibilityHistoryDays).Unix()
 		if runs, err := h.strava.FetchRunActivities(ctx, access, &after); err == nil {
 			var older []map[string]any
-			for _, a := range runActivitiesAsActs(runs) {
+			for _, a := range runActivitiesAsActs(withoutHiddenStrava(u, runs)) {
 				if d, _ := a["start_date"].(string); !seen[d] {
 					older = append(older, a)
 				}

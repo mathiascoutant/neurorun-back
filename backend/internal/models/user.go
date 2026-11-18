@@ -116,6 +116,20 @@ type User struct {
 	// LeaderboardHidden : le coureur s'est retiré des classements. Il les consulte
 	// toujours, mais n'y figure plus.
 	LeaderboardHidden bool `bson:"leaderboard_hidden,omitempty" json:"leaderboard_hidden"`
+	// HiddenStravaIDs : copies Strava de courses NeuroRun supprimées. Strava ne
+	// laisse pas une appli effacer une activité ; tant que le coureur ne l'a pas
+	// supprimée lui-même là-bas, NeuroRun fait comme si elle n'existait plus.
+	HiddenStravaIDs []int64 `bson:"hidden_strava_ids,omitempty" json:"-"`
+}
+
+// HidesStrava : l'activité Strava est la copie d'une course supprimée.
+func (u *User) HidesStrava(id int64) bool {
+	for _, h := range u.HiddenStravaIDs {
+		if h == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *User) EffectiveRole() string {

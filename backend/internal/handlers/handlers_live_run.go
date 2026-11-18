@@ -377,7 +377,7 @@ func (h *Handlers) RunHistoryFeed(w http.ResponseWriter, r *http.Request) {
 			stravaActs, err = h.strava.FetchRunActivitiesBefore(r.Context(), access, cursorBefore, fetchN)
 			if err == nil {
 				stravaIncluded = true
-				stravaActs = dropStravaCopies(stravaActs, liveAll)
+				stravaActs = dropStravaCopies(withoutHiddenStrava(u, stravaActs), liveAll)
 			}
 		}
 		h.forgetStravaIfRevoked(r.Context(), u, err)

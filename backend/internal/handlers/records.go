@@ -135,6 +135,7 @@ func (h *Handlers) addStravaRecords(
 	var acts []strava.RunActivity
 	if err == nil {
 		acts, err = h.strava.FetchRunActivities(ctx, access, nil)
+		acts = withoutHiddenStrava(u, acts)
 	}
 	h.forgetStravaIfRevoked(ctx, u, err)
 	if err != nil {

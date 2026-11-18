@@ -268,6 +268,7 @@ func (h *Handlers) Wrapped(w http.ResponseWriter, r *http.Request) {
 			acts, aerr = h.strava.FetchRunActivities(r.Context(), access, &after)
 			if aerr == nil {
 				stravaIncluded = true
+				acts = withoutHiddenStrava(u, acts)
 				ext := make([]wrappedRun, 0, len(acts))
 				for i := range acts {
 					ext = append(ext, wrappedRunFromStrava(&acts[i]))
