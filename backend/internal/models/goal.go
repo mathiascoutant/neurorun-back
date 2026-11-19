@@ -187,6 +187,11 @@ type Goal struct {
 	CoachThread []ChatTurn `bson:"coach_thread,omitempty" json:"coach_thread,omitempty"`
 	// Insight : dernière synthèse du coach sur l'avancement, gardée tant que rien ne change.
 	Insight *GoalInsight `bson:"insight,omitempty" json:"-"`
+	// LevelHistory : niveau estimé sur la distance, un point par semaine de préparation.
+	// C'est lui qui dit si l'on progresse, l'assiduité ne disant que si l'on obéit.
+	LevelHistory []GoalLevelPoint `bson:"level_history,omitempty" json:"-"`
+	// Result : le chrono réellement couru le jour de la course.
+	Result *GoalResult `bson:"result,omitempty" json:"result,omitempty"`
 	// PlanWithoutStravaData : plan généré sans JSON d’activités (objectif seul) ; repasse à false après régénération avec Strava.
 	PlanWithoutStravaData bool      `bson:"plan_without_strava_data,omitempty" json:"plan_without_strava_data,omitempty"`
 	CreatedAt             time.Time `bson:"created_at" json:"created_at"`
@@ -199,6 +204,37 @@ func (g *Goal) EffectiveTerrain() string {
 		return GoalTerrainTrail
 	}
 	return GoalTerrainRoad
+}
+
+// GoalLevelPoint : le niveau estimé un jour donné, en fourchette (voir l'avis de
+// faisabilité) : FastSec suppose l'endurance au point, SlowSec est ce que les
+// sorties garantissent.
+type GoalLevelPoint struct {
+	Date         string  `bson:"date" json:"date"`
+	FastSec      float64 `bson:"fast_sec" json:"fast_sec"`
+	SlowSec      float64 `bson:"slow_sec" json:"slow_sec"`
+	PredictedSec float64 `bson:"predicted_sec" json:"predicted_sec"`
+	Reliability  string  `bson:"reliability,omitempty" json:"reliability,omitempty"`
+	// ReliabilityWhy : la donnée qui limite l'estimation, dite en mots.
+	ReliabilityWhy string `bson:"reliability_why,omitempty" json:"reliability_why,omitempty"`
+}
+
+// Origines d'un résultat de course.
+const (
+	GoalResultStrava   = "strava"
+	GoalResultNeuroRun = "neurorun"
+	GoalResultManual   = "manual"
+)
+
+// GoalResult : le chrono couru le jour J, face au chrono visé.
+type GoalResult struct {
+	TimeSec    float64 `bson:"time_sec" json:"time_sec"`
+	DistanceKm float64 `bson:"distance_km,omitempty" json:"distance_km,omitempty"`
+	// Source : strava, neurorun ou manual (saisi à la main).
+	Source           string    `bson:"source" json:"source"`
+	StravaActivityID int64     `bson:"strava_activity_id,omitempty" json:"strava_activity_id,omitempty"`
+	LiveRunID        string    `bson:"live_run_id,omitempty" json:"live_run_id,omitempty"`
+	RecordedAt       time.Time `bson:"recorded_at" json:"recorded_at"`
 }
 
 // GoalInsight : la synthèse du coach, avec l'empreinte de l'état qu'elle commente.

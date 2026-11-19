@@ -2,6 +2,8 @@ package goalcalendar
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"time"
 
 	"runapp/internal/models"
@@ -97,6 +99,10 @@ func BuildCalendarItems(
 	runs, freeByID := withFreeLiveRuns(runs, free)
 	texts := newPlanTexts(g)
 	var items []CalendarItem
+	// Sorties déjà comptées pour une séance, et séances restées sans sortie à leur
+	// jour : la seconde passe leur cherche une sortie courue la veille ou le lendemain.
+	used := map[int64]bool{}
+	var unfilled []unfilledSession
 	for _, sch := range ResolveSchedule(g, loc) {
 		w, s := sch.Week, sch.Session
 		ps, ok := pm[sessionKey(w, s)]
@@ -164,24 +170,112 @@ func BuildCalendarItems(
 
 		st, matched := SessionStatus(now, day, loc, runs, ps.DistanceKm, ps.PaceSecPerKm, effortPace)
 		item.Status = st
-		switch {
-		case matched == nil:
-		case matched.ID > 0:
-			id := matched.ID
-			item.StravaActivityID = &id
-			fillActual(&item, *matched, effortPace)
-		default:
-			// Identifiant négatif : course NeuroRun courue ce jour-là sans passer par
-			// le bouton de la séance. Elle compte quand même, Strava ou pas.
-			if l, ok := freeByID[matched.ID]; ok {
-				item.LiveRunID = l.LiveRunID
-				item.ScoreTotal = l.ScoreTotal
+		if matched == nil {
+			if item.Race == nil {
+				unfilled = append(unfilled, unfilledSession{idx: len(items), ps: ps})
 			}
-			fillActual(&item, *matched, effortPace)
+		} else {
+			used[matched.ID] = true
+			attachRun(&item, *matched, freeByID, effortPace)
 		}
 		items = append(items, item)
 	}
+	fillShiftedRuns(items, unfilled, runs, used, freeByID, loc, now, effortPace)
 	return items
+}
+
+type unfilledSession struct {
+	idx int
+	ps  models.PlannedSession
+}
+
+// attachRun reporte sur la séance la sortie qui la remplit. Un identifiant négatif
+// désigne une course NeuroRun courue sans passer par le bouton de la séance : elle
+// compte quand même, Strava ou pas.
+func attachRun(item *CalendarItem, r strava.RunActivity, freeByID map[int64]LinkedRun, effortPace EffortPaceResolver) {
+	if r.ID > 0 {
+		id := r.ID
+		item.StravaActivityID = &id
+	} else if l, ok := freeByID[r.ID]; ok {
+		item.LiveRunID = l.LiveRunID
+		item.ScoreTotal = l.ScoreTotal
+	}
+	fillActual(item, r, effortPace)
+}
+
+// fillShiftedRuns : la sortie longue du dimanche courue le samedi, sans passer par
+// l'app, compte pour le dimanche. Une séance restée sans sortie à son jour prend
+// une sortie de la veille ou du lendemain (même fenêtre qu'une course lancée depuis
+// la séance), à condition qu'aucune autre séance ne l'ait déjà prise. La séance
+// d'aujourd'hui ou de demain peut ainsi être remplie d'avance par une sortie déjà
+// courue ; jamais par une sortie à venir.
+//
+// Quand une sortie pourrait servir deux séances, elle va à celle qu'elle valide
+// plutôt qu'à celle qu'elle remplit à moitié, puis à celle dont la distance lui
+// ressemble le plus : 10 km courus mercredi sont la sortie longue de jeudi, pas le
+// fractionné manqué de mardi.
+func fillShiftedRuns(
+	items []CalendarItem,
+	unfilled []unfilledSession,
+	runs []strava.RunActivity,
+	used map[int64]bool,
+	freeByID map[int64]LinkedRun,
+	loc *time.Location,
+	now time.Time,
+	effortPace EffortPaceResolver,
+) {
+	type pair struct {
+		u      unfilledSession
+		run    strava.RunActivity
+		status string
+		gap    float64
+	}
+	soon := DateKey(MidnightIn(now, loc).AddDate(0, 0, LinkWindowDays))
+	var pairs []pair
+	for _, u := range unfilled {
+		item := &items[u.idx]
+		if item.Status != "missed" && !(item.Status == "upcoming" && item.Date <= soon) {
+			continue
+		}
+		day, err := time.ParseInLocation("2006-01-02", item.Date, loc)
+		if err != nil {
+			continue
+		}
+		for _, d := range []int{-LinkWindowDays, LinkWindowDays} {
+			for _, r := range runsOnLocalDate(runs, day.AddDate(0, 0, d), loc) {
+				if used[r.ID] || r.StartAt.After(now) {
+					continue
+				}
+				st := finalizeStatus(&r, u.ps.DistanceKm, u.ps.PaceSecPerKm, effortPace)
+				if st == "missed" {
+					continue
+				}
+				gap := 0.0
+				if u.ps.DistanceKm > 0 {
+					gap = math.Abs(r.DistanceM/1000-u.ps.DistanceKm) / u.ps.DistanceKm
+				}
+				pairs = append(pairs, pair{u: u, run: r, status: st, gap: gap})
+			}
+		}
+	}
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if (pairs[i].status == "done") != (pairs[j].status == "done") {
+			return pairs[i].status == "done"
+		}
+		return pairs[i].gap < pairs[j].gap
+	})
+	filled := map[int]bool{}
+	for _, p := range pairs {
+		if filled[p.u.idx] || used[p.run.ID] {
+			continue
+		}
+		filled[p.u.idx] = true
+		used[p.run.ID] = true
+		item := &items[p.u.idx]
+		item.Status = p.status
+		item.RunDate = DateKey(MidnightIn(p.run.StartAt, loc))
+		attachRun(item, p.run, freeByID, effortPace)
+	}
 }
 
 // fillActual reporte ce qui a été couru : distance, allure moyenne, et pour un

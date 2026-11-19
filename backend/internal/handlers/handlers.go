@@ -1555,6 +1555,8 @@ func (h *Handlers) ReplanGoalWithStrava(w http.ResponseWriter, r *http.Request) 
 
 	// Seul le plan change : l'objectif, le rythme et les jours choisis sont ceux
 	// que la personne a fixés, ce n'est pas à une régénération de les redéfinir.
+	// Ce qui a été adapté avec le coach survit à la réécriture.
+	planned = goalcalendar.KeepEditedSessions(g.PlannedSessions, planned, g.Weeks, g.SessionsPerWeek)
 	if err := h.db.UpdateGoalTrainingFields(
 		r.Context(), u.ID, gid, plan, planned,
 		g.Weeks, g.SessionsPerWeek, g.TargetTime, g.CalendarDayOffsets, false,
@@ -1753,6 +1755,11 @@ func (h *Handlers) Mount(r chi.Router) {
 		pr.Delete("/goals/{id}", h.DeleteGoal)
 		pr.Get("/goals/{id}/calendar", h.GoalCalendar)
 		pr.Get("/goals/{id}/overview", h.GoalOverview)
+		pr.Get("/goals/{id}/level", h.GoalLevel)
+		pr.Get("/goals/{id}/result", h.GoalResult)
+		pr.Put("/goals/{id}/result", h.PutGoalResult)
+		pr.Delete("/goals/{id}/result", h.DeleteGoalResult)
+		pr.Put("/goals/{id}/sessions/{week}/{session}/schedule", h.SetGoalSessionSchedule)
 		pr.Get("/goals/{id}/sessions/{week}/{session}/workout", h.GoalSessionWorkout)
 		pr.Put("/goals/{id}/race", h.SetGoalRace)
 		pr.Post("/goals/{id}/races", h.AddGoalRace)

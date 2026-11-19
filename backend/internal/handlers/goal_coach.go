@@ -93,7 +93,7 @@ func (h *Handlers) GoalChat(w http.ResponseWriter, r *http.Request) {
 		actsJSON:  actsJSON,
 		hasStrava: hasStravaData,
 		user:      u,
-		profile:   h.runnerProfileBlock(r.Context(), u, g.DistanceKm),
+		profile:   h.runnerProfileBlock(r.Context(), u, g.DistanceKm) + levelBlock(g),
 	}
 	// Sans Strava (ou Strava en panne), le coach voit quand même les courses NeuroRun.
 	tools.runs, _ = h.loadGoalRuns(r, u, g)

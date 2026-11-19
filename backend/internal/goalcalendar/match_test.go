@@ -102,7 +102,7 @@ func TestSessionStatusRegularRunUnchanged(t *testing.T) {
 	}
 }
 
-// Une distance trop courte reste manquée, fractionné ou pas.
+// Une distance écourtée compte pour « partielle », trop courte pour « manquée ».
 func TestSessionStatusIntervalTooShort(t *testing.T) {
 	loc := paris(t)
 	now := time.Date(2026, 8, 12, 20, 0, 0, 0, loc)
@@ -110,8 +110,73 @@ func TestSessionStatusIntervalTooShort(t *testing.T) {
 	runs := []strava.RunActivity{intervalRun(loc, day)}
 
 	effort := func(strava.RunActivity) *float64 { return ptr(280.0) }
-	if st, _ := SessionStatus(now, day, loc, runs, 12, ptr(315.0), effort); st != "missed" {
-		t.Fatalf("statut = %q, attendu \"missed\" (8 km courus pour 12 km prévus)", st)
+	if st, _ := SessionStatus(now, day, loc, runs, 12, ptr(315.0), effort); st != "partial" {
+		t.Fatalf("statut = %q, attendu \"partial\" (8 km courus pour 12 km prévus)", st)
+	}
+	if st, _ := SessionStatus(now, day, loc, runs, 17, ptr(315.0), effort); st != "missed" {
+		t.Fatalf("statut = %q, attendu \"missed\" (8 km courus pour 17 km prévus)", st)
+	}
+}
+
+// footing : `km` couru à `pace` s/km le 11 août.
+func footing(loc *time.Location, km, pace float64) strava.RunActivity {
+	return strava.RunActivity{
+		ID: 7, Name: "Footing", Type: "Run",
+		StartAt:   time.Date(2026, 8, 11, 8, 0, 0, 0, loc).UTC(),
+		DistanceM: km * 1000, MovingSec: int(km * pace),
+	}
+}
+
+// La distance ne fait plus couperet : 9,8 km pour 10 km, c'est une séance faite.
+func TestSessionStatusDistanceShares(t *testing.T) {
+	loc := paris(t)
+	now := time.Date(2026, 8, 12, 20, 0, 0, 0, loc)
+	day := time.Date(2026, 8, 11, 0, 0, 0, 0, loc)
+	cases := []struct {
+		km   float64
+		want string
+	}{{9.8, "done"}, {9.0, "done"}, {8.5, "partial"}, {5.0, "partial"}, {4.0, "missed"}}
+	for _, c := range cases {
+		runs := []strava.RunActivity{footing(loc, c.km, 360)}
+		if st, _ := SessionStatus(now, day, loc, runs, 10, ptr(360), nil); st != c.want {
+			t.Errorf("%.1f km pour 10 km prévus : statut = %q, attendu %q", c.km, st, c.want)
+		}
+	}
+}
+
+// L'allure tolère le bruit du GPS, plus largement vers le rapide.
+func TestSessionStatusPaceTolerance(t *testing.T) {
+	loc := paris(t)
+	now := time.Date(2026, 8, 12, 20, 0, 0, 0, loc)
+	day := time.Date(2026, 8, 11, 0, 0, 0, 0, loc)
+	cases := []struct {
+		pace float64
+		want string
+	}{
+		{352, "done"},    // 5:52 pour 6:00
+		{345, "done"},    // 15 s plus vite : un footing un peu vif
+		{370, "done"},    // 10 s plus lent : dans les 3 %
+		{330, "partial"}, // 30 s plus vite : ce n'est plus un footing
+		{380, "partial"}, // 20 s plus lent
+	}
+	for _, c := range cases {
+		runs := []strava.RunActivity{footing(loc, 8, c.pace)}
+		if st, _ := SessionStatus(now, day, loc, runs, 8, ptr(360), nil); st != c.want {
+			t.Errorf("allure %.0f s/km pour 360 : statut = %q, attendu %q", c.pace, st, c.want)
+		}
+	}
+}
+
+// Une sortie complète passe devant une sortie écourtée du même jour.
+func TestBestRunPrefersFullDistance(t *testing.T) {
+	loc := paris(t)
+	short := footing(loc, 6, 360)
+	short.ID = 1
+	full := footing(loc, 10, 380)
+	full.ID = 2
+	best := BestRunForSession([]strava.RunActivity{short, full}, 10, ptr(360), nil)
+	if best == nil || best.ID != 2 {
+		t.Fatalf("sortie retenue = %+v, attendu la sortie de 10 km", best)
 	}
 }
 

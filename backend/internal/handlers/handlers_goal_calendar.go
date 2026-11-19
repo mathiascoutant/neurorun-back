@@ -46,6 +46,7 @@ func (h *Handlers) GoalCalendar(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"timezone":         tzName,
 		"items":            items,
+		"weeks":            goalcalendar.PlanPhases(g),
 		"unavailabilities": g.Unavailabilities,
 		"races":            g.Races,
 	})

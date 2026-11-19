@@ -185,6 +185,9 @@ func (h *Handlers) insightFacts(
 	if rb := raceBlock(g); rb != "" {
 		b.WriteString("\n" + rb)
 	}
+	if lb := levelBlock(g); lb != "" {
+		b.WriteString("\n" + lb)
+	}
 	if len(g.CoachNotes) > 0 {
 		b.WriteString("\nCe que tu sais de la personne :\n- " + strings.Join(g.CoachNotes, "\n- ") + "\n")
 	}

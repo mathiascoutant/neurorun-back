@@ -129,6 +129,10 @@ Disponibilité : %d séance(s) par semaine en moyenne (toutes les séances de ch
 Rédige le plan complet en respectant les titres et le style demandés. Pas de vouvoiement.
 Écris les %d semaines une par une, de ### Semaine 1 à ### Semaine %d : aucune ne doit être résumée ni renvoyée à une autre.
 Chaque semaine, chaque séance doit contenir des min/km et, si fractionné, des temps par répétition.`, label, models.GoalTerrainLabel(terrain), targetTime, weeks, spw, weeks, weeks)
+	// Les phases sont fixées par le code : l'écran les affiche, le plan doit les suivre.
+	if ph := goalcalendar.PhasesPrompt(weeks); ph != "" {
+		userQ += "\n" + ph
+	}
 
 	var plan string
 	var err error

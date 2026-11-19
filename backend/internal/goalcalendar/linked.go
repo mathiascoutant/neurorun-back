@@ -220,7 +220,7 @@ func plannedReps(ps models.PlannedSession) int {
 // n'est pas une séance manquée. La distance ne tranche qu'à défaut.
 func linkedStatus(l LinkedRun, ps models.PlannedSession) string {
 	st := finalizeStatus(&l.Run, ps.DistanceKm, ps.PaceSecPerKm, nil)
-	if st != "missed" || l.Reps == 0 || SessionKind(ps) != models.SessionKindInterval {
+	if st == "done" || l.Reps == 0 || SessionKind(ps) != models.SessionKindInterval {
 		return st
 	}
 	want := plannedReps(ps)

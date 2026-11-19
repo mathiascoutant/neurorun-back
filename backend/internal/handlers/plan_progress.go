@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"runapp/internal/goalcalendar"
 	oai "runapp/internal/llm"
 	"runapp/internal/models"
 	"runapp/internal/strava"
@@ -245,6 +246,8 @@ func (h *Handlers) ReplanGoalWithStravaStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Ce qui a été adapté avec le coach survit à la réécriture.
+	planned = goalcalendar.KeepEditedSessions(g.PlannedSessions, planned, g.Weeks, g.SessionsPerWeek)
 	if err := h.db.UpdateGoalTrainingFields(
 		r.Context(), u.ID, gid, plan, planned,
 		g.Weeks, g.SessionsPerWeek, g.TargetTime, g.CalendarDayOffsets, false,

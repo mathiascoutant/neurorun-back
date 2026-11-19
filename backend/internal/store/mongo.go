@@ -963,6 +963,19 @@ func (d *DB) SetGoalInsight(ctx context.Context, userID, goalID primitive.Object
 	return d.updateGoal(ctx, userID, goalID, bson.M{"$set": bson.M{"insight": in}})
 }
 
+// SetGoalLevelHistory remplace la courbe de niveau de l'objectif.
+func (d *DB) SetGoalLevelHistory(ctx context.Context, userID, goalID primitive.ObjectID, pts []models.GoalLevelPoint) error {
+	return d.updateGoal(ctx, userID, goalID, bson.M{"$set": bson.M{"level_history": pts}})
+}
+
+// SetGoalResult enregistre le chrono couru ; nil l'efface.
+func (d *DB) SetGoalResult(ctx context.Context, userID, goalID primitive.ObjectID, res *models.GoalResult) error {
+	if res == nil {
+		return d.updateGoal(ctx, userID, goalID, bson.M{"$unset": bson.M{"result": ""}})
+	}
+	return d.updateGoal(ctx, userID, goalID, bson.M{"$set": bson.M{"result": res}})
+}
+
 // SetGoalRace enregistre l'épreuve visée : son nom, si elle est officielle, et ce
 // qu'on a pu en apprendre. info nil efface les renseignements.
 func (d *DB) SetGoalRace(ctx context.Context, userID, goalID primitive.ObjectID, name string, official bool, info *models.RaceInfo) error {

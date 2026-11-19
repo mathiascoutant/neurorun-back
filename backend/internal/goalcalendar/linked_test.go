@@ -139,8 +139,8 @@ func TestLinkedIntervalJudgedOnReps(t *testing.T) {
 		{reps: 6, want: "done"},    // les 6 x 1000 m prévus
 		{reps: 8, want: "done"},    // plus qu'il n'en fallait
 		{reps: 3, want: "partial"}, // la moitié
-		{reps: 2, want: "missed"},  // trop peu : la distance tranche, 5 km sur 8
-		{reps: 0, want: "missed"},  // pas de note : la distance tranche
+		{reps: 2, want: "partial"}, // trop peu : la distance tranche, 5 km sur 8 (plus de la moitié)
+		{reps: 0, want: "partial"}, // pas de note : la distance tranche
 	} {
 		l := linkedInterval(loc, 12, 9, 5)
 		l.Reps = tc.reps
@@ -173,5 +173,51 @@ func TestPlannedReps(t *testing.T) {
 		if got := plannedReps(tc.ps); got != tc.want {
 			t.Fatalf("%q : %d répétitions, attendu %d", tc.ps.Summary, got, tc.want)
 		}
+	}
+}
+
+// stravaRun : sortie Strava sans lien avec une séance.
+func stravaRun(loc *time.Location, id int64, day int, km, pace float64) strava.RunActivity {
+	return strava.RunActivity{
+		ID: id, Name: "Course", Type: "Run",
+		StartAt:   time.Date(2026, 8, day, 9, 0, 0, 0, loc).UTC(),
+		DistanceM: km * 1000, MovingSec: int(km * pace),
+	}
+}
+
+// La sortie longue du jeudi courue le vendredi, sans passer par l'app, compte
+// pour le jeudi au lieu de le laisser « manqué ».
+func TestShiftedStravaRunFillsSession(t *testing.T) {
+	loc := paris(t)
+	now := time.Date(2026, 8, 15, 20, 0, 0, 0, loc)
+	runs := []strava.RunActivity{stravaRun(loc, 9, 14, 10, 360)}
+	it := byKey(BuildCalendarItems(linkedGoal(), runs, nil, nil, loc, now, nil))["1:3"]
+	if it.Status != "done" || it.RunDate != "2026-08-14" || it.StravaActivityID == nil {
+		t.Fatalf("séance du jeudi = %+v, attendu remplie par la sortie du vendredi", it)
+	}
+}
+
+// Courue la veille, la séance de demain est déjà faite.
+func TestShiftedRunFillsTomorrow(t *testing.T) {
+	loc := paris(t)
+	now := time.Date(2026, 8, 12, 20, 0, 0, 0, loc)
+	runs := []strava.RunActivity{stravaRun(loc, 9, 12, 10, 360)}
+	it := byKey(BuildCalendarItems(linkedGoal(), runs, nil, nil, loc, now, nil))["1:3"]
+	if it.Status != "done" || it.RunDate != "2026-08-12" {
+		t.Fatalf("séance de demain = %+v, attendu remplie par la sortie d'aujourd'hui", it)
+	}
+}
+
+// Une sortie qui remplit déjà la séance de son jour ne sert pas une deuxième fois.
+func TestShiftedRunNotReused(t *testing.T) {
+	loc := paris(t)
+	now := time.Date(2026, 8, 15, 20, 0, 0, 0, loc)
+	runs := []strava.RunActivity{stravaRun(loc, 9, 11, 8, 300)}
+	items := byKey(BuildCalendarItems(linkedGoal(), runs, nil, nil, loc, now, nil))
+	if items["1:2"].Status != "done" {
+		t.Fatalf("séance du mardi = %q, attendu done", items["1:2"].Status)
+	}
+	if items["1:1"].Status != "missed" {
+		t.Fatalf("séance du lundi = %q, attendu missed : la sortie du mardi est déjà prise", items["1:1"].Status)
 	}
 }
