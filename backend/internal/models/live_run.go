@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"runapp/internal/vma"
@@ -70,6 +71,18 @@ type RunScore struct {
 	// Weather : météo au milieu de la course, absente sans trace GPS ou si
 	// la source n'a pas répondu. Sa correction est dans Result.HeatPct.
 	Weather *weather.Conditions `bson:"weather,omitempty" json:"weather,omitempty"`
+}
+
+// MarshalJSON : `kms` toujours en liste, jamais `null`. Un fractionné est noté
+// répétition par répétition et n'a pas de kilomètres ; l'app lisait ce `null`
+// comme une liste et plantait à l'ouverture de la course. Le faire à la sortie
+// couvre aussi les notes déjà enregistrées, sans les recalculer.
+func (s RunScore) MarshalJSON() ([]byte, error) {
+	type plain RunScore
+	if s.Kms == nil {
+		s.Kms = []vma.KmScore{}
+	}
+	return json.Marshal(plain(s))
 }
 
 // LiveRunLeaderboard : ce qu'une course apporte au classement. Calculé une fois à
