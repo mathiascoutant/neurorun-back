@@ -1,6 +1,8 @@
 package goalcalendar
 
 import (
+	"regexp"
+	"strconv"
 	"time"
 
 	"runapp/internal/models"
@@ -25,6 +27,8 @@ type LinkedRun struct {
 	Run       strava.RunActivity
 	// ScoreTotal : note sur 100 de la course, quand elle a été notée.
 	ScoreTotal *int
+	// Reps : répétitions repérées par la note d'un fractionné, 0 sinon.
+	Reps int
 }
 
 // LiveRunStart : instant de départ d'une course NeuroRun. La date d'envoi
@@ -59,6 +63,7 @@ func RunFromLive(lr models.LiveRun) LinkedRun {
 	if lr.Score != nil {
 		total := lr.Score.Total
 		out.ScoreTotal = &total
+		out.Reps = len(lr.Score.Reps)
 	}
 	return out
 }
@@ -183,4 +188,73 @@ func bestLinkedRun(list []LinkedRun, minKm float64, paceTarget *float64) *Linked
 		return nil
 	}
 	return &list[-best.ID-1]
+}
+
+// reSummaryReps : « 10x200 m », « 6 × 1 min » — le nombre de répétitions d'un
+// titre de séance, quand ses étapes n'ont pas encore été calculées.
+var reSummaryReps = regexp.MustCompile(`(\d+)\s*[x×]\s*\d`)
+
+// plannedReps : répétitions prévues par une séance de fractionné, 0 si on ne
+// sait pas les compter.
+func plannedReps(ps models.PlannedSession) int {
+	n := 0
+	for _, st := range ps.Steps {
+		if st.Kind == models.StepRun {
+			n++
+		}
+	}
+	if n > 1 {
+		return n
+	}
+	if m := reSummaryReps.FindStringSubmatch(ps.Summary); m != nil {
+		if v, err := strconv.Atoi(m[1]); err == nil && v > 1 {
+			return v
+		}
+	}
+	return 0
+}
+
+// linkedStatus juge une course lancée depuis sa séance. Un fractionné se juge
+// sur ses répétitions : la distance prévue compte aussi l'échauffement et le
+// retour au calme, et courir les 10 x 200 m avec un échauffement un peu court
+// n'est pas une séance manquée. La distance ne tranche qu'à défaut.
+func linkedStatus(l LinkedRun, ps models.PlannedSession) string {
+	st := finalizeStatus(&l.Run, ps.DistanceKm, ps.PaceSecPerKm, nil)
+	if st != "missed" || l.Reps == 0 || SessionKind(ps) != models.SessionKindInterval {
+		return st
+	}
+	want := plannedReps(ps)
+	switch {
+	case want == 0:
+		return st
+	case l.Reps >= want:
+		// Toutes les répétitions faites : reste à juger l'allure des efforts.
+		return finalizeStatus(&l.Run, 0, ps.PaceSecPerKm, nil)
+	case 2*l.Reps >= want:
+		return "partial"
+	}
+	return st
+}
+
+// pickLinkedRun choisit, parmi les courses lancées depuis la séance, celle qui
+// la remplit, et son statut. Une course trop courte ne compte que si c'est un
+// fractionné dont les répétitions ont été faites (voir linkedStatus).
+func pickLinkedRun(list []LinkedRun, ps models.PlannedSession) (*LinkedRun, string) {
+	if l := bestLinkedRun(list, ps.DistanceKm, ps.PaceSecPerKm); l != nil {
+		if st := linkedStatus(*l, ps); st != "missed" {
+			return l, st
+		}
+	}
+	var best *LinkedRun
+	bestSt := "missed"
+	for i := range list {
+		st := linkedStatus(list[i], ps)
+		if st == "missed" {
+			continue
+		}
+		if best == nil || list[i].Reps > best.Reps || (bestSt == "partial" && st == "done") {
+			best, bestSt = &list[i], st
+		}
+	}
+	return best, bestSt
 }

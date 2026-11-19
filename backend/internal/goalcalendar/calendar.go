@@ -147,20 +147,19 @@ func BuildCalendarItems(
 		day := sch.Date
 		item.Date = DateKey(day)
 
-		// Une course trop courte pour la séance ne la remplit pas : on retombe
-		// alors sur les sorties du jour, comme si elle n'avait pas été lancée.
-		if l := bestLinkedRun(linkedBySession[sessionKey(w, s)], ps.DistanceKm, ps.PaceSecPerKm); l != nil {
-			if st := finalizeStatus(&l.Run, ps.DistanceKm, ps.PaceSecPerKm, nil); st != "missed" {
-				item.Status = st
-				item.LiveRunID = l.LiveRunID
-				item.ScoreTotal = l.ScoreTotal
-				if rd := DateKey(MidnightIn(l.Run.StartAt, loc)); rd != item.Date {
-					item.RunDate = rd
-				}
-				fillActual(&item, l.Run, nil)
-				items = append(items, item)
-				continue
+		// Une course trop courte pour la séance ne la remplit pas (sauf fractionné
+		// aux répétitions faites) : on retombe alors sur les sorties du jour, comme
+		// si elle n'avait pas été lancée.
+		if l, st := pickLinkedRun(linkedBySession[sessionKey(w, s)], ps); l != nil {
+			item.Status = st
+			item.LiveRunID = l.LiveRunID
+			item.ScoreTotal = l.ScoreTotal
+			if rd := DateKey(MidnightIn(l.Run.StartAt, loc)); rd != item.Date {
+				item.RunDate = rd
 			}
+			fillActual(&item, l.Run, nil)
+			items = append(items, item)
+			continue
 		}
 
 		st, matched := SessionStatus(now, day, loc, runs, ps.DistanceKm, ps.PaceSecPerKm, effortPace)

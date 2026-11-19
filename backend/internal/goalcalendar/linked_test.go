@@ -125,3 +125,53 @@ func TestCanLinkRunWindow(t *testing.T) {
 		t.Error("une séance annulée ne doit pas pouvoir être courue")
 	}
 }
+
+// Le cas remonté le 19/11/2026 : 10 x 200 m faits le lendemain, mais 5,9 km sur
+// les 7,1 prévus avec l'échauffement. Un fractionné se juge sur ses répétitions,
+// pas sur la longueur de l'échauffement.
+func TestLinkedIntervalJudgedOnReps(t *testing.T) {
+	loc := paris(t)
+	now := time.Date(2026, 8, 12, 20, 0, 0, 0, loc)
+	for _, tc := range []struct {
+		reps int
+		want string
+	}{
+		{reps: 6, want: "done"},    // les 6 x 1000 m prévus
+		{reps: 8, want: "done"},    // plus qu'il n'en fallait
+		{reps: 3, want: "partial"}, // la moitié
+		{reps: 2, want: "missed"},  // trop peu : la distance tranche, 5 km sur 8
+		{reps: 0, want: "missed"},  // pas de note : la distance tranche
+	} {
+		l := linkedInterval(loc, 12, 9, 5)
+		l.Reps = tc.reps
+		it := byKey(BuildCalendarItems(linkedGoal(), nil, []LinkedRun{l}, nil, loc, now, nil))["1:2"]
+		if it.Status != tc.want {
+			t.Fatalf("%d répétitions : statut %q, attendu %q", tc.reps, it.Status, tc.want)
+		}
+		if tc.want != "missed" && it.LiveRunID != "live-1" {
+			t.Fatalf("%d répétitions : course %q non rattachée", tc.reps, it.LiveRunID)
+		}
+	}
+}
+
+// Les répétitions se comptent sur les étapes de la montre quand elles existent,
+// sur le titre sinon.
+func TestPlannedReps(t *testing.T) {
+	steps := []models.WorkoutStep{{Kind: models.StepWarmup}, {Kind: models.StepCooldown}}
+	for i := 0; i < 10; i++ {
+		steps = append(steps, models.WorkoutStep{Kind: models.StepRun}, models.WorkoutStep{Kind: models.StepRecover})
+	}
+	for _, tc := range []struct {
+		ps   models.PlannedSession
+		want int
+	}{
+		{models.PlannedSession{Summary: "Fractionné 8x400 m", Steps: steps}, 10},
+		{models.PlannedSession{Summary: "Fractionné 6 × 1 min"}, 6},
+		{models.PlannedSession{Summary: "Fractionné 8x30 s"}, 8},
+		{models.PlannedSession{Summary: "Séance au seuil"}, 0},
+	} {
+		if got := plannedReps(tc.ps); got != tc.want {
+			t.Fatalf("%q : %d répétitions, attendu %d", tc.ps.Summary, got, tc.want)
+		}
+	}
+}
