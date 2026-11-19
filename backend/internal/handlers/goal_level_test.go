@@ -25,6 +25,22 @@ func TestLevelVerdict(t *testing.T) {
 			t.Errorf("cible %.0f : %q, attendu %q", c.target, got, c.want)
 		}
 	}
+	if got, _ := levelVerdict(3700, 3400, 3500, 3600, ReliabilityLow); got != LevelOnTrack {
+		t.Errorf("estimation peu fiable : %q, attendu %q", got, LevelOnTrack)
+	}
+}
+
+// Le cas vu le 19/11/2026 : marathon à 51 semaines, 4h00–4h50 aujourd'hui, peu
+// fiable, 4h30 visé. Ce n'est pas « en avance ».
+func TestBuildGoalLevelMarathonFarAway(t *testing.T) {
+	loc, _ := calendarLocation()
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, loc)
+	g := &models.Goal{DistanceKm: 42.195, TargetTime: "4h30", Weeks: 51, SessionsPerWeek: 3}
+	hist := []models.GoalLevelPoint{{Date: "2026-11-19", FastSec: 14400, SlowSec: 17400, PredictedSec: 15900, Reliability: ReliabilityLow}}
+	out := buildGoalLevel(g, hist, now.AddDate(0, 0, 353), now, loc)
+	if out.Status == LevelAhead || out.ProjectedSlowSec <= out.TargetSec {
+		t.Fatalf("projection = %+v, attendu un haut de fourchette au-dessus de 4h30", out)
+	}
 }
 
 // La projection applique la progression des semaines restantes, et aucune une

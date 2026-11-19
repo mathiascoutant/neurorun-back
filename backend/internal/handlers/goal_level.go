@@ -130,8 +130,10 @@ func (h *Handlers) measureLevel(ctx context.Context, u *models.User, g *models.G
 }
 
 // buildGoalLevel projette la dernière mesure au jour de la course et la compare au
-// chrono visé. La progression attendue est celle de l'avis de faisabilité
-// (allowedProgress) sur les semaines qui restent : rien de plus optimiste.
+// chrono visé. Le bas de la fourchette reçoit toute la progression de l'avis de
+// faisabilité (allowedProgress) sur les semaines qui restent ; le haut n'en reçoit
+// que la moitié : une préparation ne tient pas toujours ses promesses, et la
+// fourchette s'élargit avec l'horizon au lieu de glisser d'un bloc.
 func buildGoalLevel(g *models.Goal, hist []models.GoalLevelPoint, end, now time.Time, loc *time.Location) goalLevelResponse {
 	out := goalLevelResponse{
 		History: hist,
@@ -158,8 +160,8 @@ func buildGoalLevel(g *models.Goal, hist []models.GoalLevelPoint, end, now time.
 		gain = allowedProgress(out.WeeksLeft, g.SessionsPerWeek)
 	}
 	out.ProjectedFastSec = math.Round(last.FastSec * (1 - gain))
-	out.ProjectedSlowSec = math.Round(last.SlowSec * (1 - gain))
-	out.ProjectedSec = math.Round(last.PredictedSec * (1 - gain))
+	out.ProjectedSlowSec = math.Round(last.SlowSec * (1 - gain/2))
+	out.ProjectedSec = math.Round((out.ProjectedFastSec + out.ProjectedSlowSec) / 2)
 	out.Status, out.Note = levelVerdict(out.TargetSec, out.ProjectedFastSec, out.ProjectedSec, out.ProjectedSlowSec, last.Reliability)
 	if out.Trail {
 		out.Note += " En trail, le dénivelé rend l'estimation moins sûre que sur route."
@@ -184,6 +186,10 @@ func levelVerdict(target, fast, mid, slow float64, reliability string) (string, 
 		status, note = LevelOff, "Ton chrono visé est plus rapide que le meilleur cas projeté. Parles-en au coach : on peut ajuster l'objectif ou la préparation."
 	}
 	if reliability == ReliabilityLow {
+		// Sur une estimation peu fiable, « en avance » promettrait plus que les données.
+		if status == LevelAhead {
+			status, note = LevelOnTrack, "En route : la projection au jour J tient ton chrono visé."
+		}
 		note += " Estimation peu fiable pour l'instant : elle se précisera avec tes sorties."
 	}
 	return status, note
